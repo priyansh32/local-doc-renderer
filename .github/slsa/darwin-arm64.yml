@@ -1,0 +1,12 @@
+version: 1
+
+goos: darwin
+goarch: arm64
+binary: local-doc-renderer-darwin-arm64
+
+env:
+  - CGO_ENABLED=0
+flags:
+  - -trimpath
+
+main: ./main.go

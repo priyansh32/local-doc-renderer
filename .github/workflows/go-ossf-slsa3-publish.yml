@@ -25,18 +25,29 @@ permissions: read-all
 
 jobs:
   # ========================================================================================================================================
-  #     Prerequesite: Create a .slsa-goreleaser.yml in the root directory of your project.
+  #     Prerequesite: Provide one SLSA config file per target.
   #       See format in https://github.com/slsa-framework/slsa-github-generator/blob/main/internal/builders/go/README.md#configuration-file
   #=========================================================================================================================================
   build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - linux
+          - windows
+          - darwin
+        arch:
+          - amd64
+          - arm64
+    name: Build ${{ matrix.os }}-${{ matrix.arch }}
     permissions:
-      id-token: write # To sign.
-      contents: write # To upload release assets.
-      actions: read   # To read workflow path.
+      id-token: write # To sign the provenance.
+      contents: write # To upload assets to release.
+      actions: read # To read the workflow path.
     uses: slsa-framework/slsa-github-generator/.github/workflows/builder_go_slsa3.yml@v2.1.0
     with:
       go-version: 1.25.0
-      config-file: .slsa-goreleaser.yml
+      config-file: .github/slsa/${{ matrix.os }}-${{ matrix.arch }}.yml
       upload-assets: true
       upload-tag-name: "${{ github.event_name == 'workflow_dispatch' && github.event.inputs.version || github.event.release.tag_name }}"
       # =============================================================================================================

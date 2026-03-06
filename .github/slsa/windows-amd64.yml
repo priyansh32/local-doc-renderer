@@ -1,0 +1,12 @@
+version: 1
+
+goos: windows
+goarch: amd64
+binary: local-doc-renderer-windows-amd64.exe
+
+env:
+  - CGO_ENABLED=0
+flags:
+  - -trimpath
+
+main: ./main.go

@@ -1,0 +1,12 @@
+version: 1
+
+goos: linux
+goarch: amd64
+binary: local-doc-renderer-linux-amd64
+
+env:
+  - CGO_ENABLED=0
+flags:
+  - -trimpath
+
+main: ./main.go
