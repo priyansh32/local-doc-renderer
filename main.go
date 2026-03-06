@@ -2,17 +2,27 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"html/template"
+	"io"
 	"log"
+	"math"
+	"net"
 	"net/http"
 	"os"
+	"os/exec"
+	"os/signal"
+	"path"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	chromahtml "github.com/alecthomas/chroma/v2/formatters/html"
@@ -68,13 +78,24 @@ type PageData struct {
 }
 
 type SearchEntry struct {
+	Title   string
+	Path    string
+	Content string
+}
+
+type SearchResult struct {
 	Title   string `json:"title"`
 	Path    string `json:"path"`
-	Content string `json:"content"`
+	Snippet string `json:"snippet"`
+}
+
+type searchMatch struct {
+	result     SearchResult
+	titleMatch bool
 }
 
 // ---------------------------------------------------------------------------
-// Search index cache
+// Caches and guards
 // ---------------------------------------------------------------------------
 
 type searchCache struct {
@@ -83,9 +104,52 @@ type searchCache struct {
 	builtAt time.Time
 }
 
-var cache searchCache
+type navTreeCache struct {
+	mu      sync.RWMutex
+	tree    []*Node
+	builtAt time.Time
+}
 
-var contentDir string
+type rateLimiter struct {
+	mu          sync.Mutex
+	clients     map[string]*clientBucket
+	rate        float64
+	burst       float64
+	clientTTL   time.Duration
+	lastCleanup time.Time
+}
+
+type clientBucket struct {
+	tokens   float64
+	lastSeen time.Time
+}
+
+const (
+	searchCacheTTL       = 30 * time.Second
+	navCacheTTL          = 30 * time.Second
+	maxSearchResults     = 12
+	maxSearchQueryLength = 120
+	maxRequestBodyBytes  = int64(1 << 20)
+	rateLimitPerSecond   = 10.0
+	rateLimitBurst       = 40.0
+	rateLimiterClientTTL = 10 * time.Minute
+	serverReadTimeout    = 15 * time.Second
+	serverWriteTimeout   = 30 * time.Second
+	serverIdleTimeout    = 60 * time.Second
+	serverHeaderTimeout  = 5 * time.Second
+	serverMaxHeaderBytes = 1 << 20
+)
+
+var (
+	cache          searchCache
+	navCache       navTreeCache
+	contentDir     string
+	contentRoot    string
+	highlightCSS   template.CSS
+	pageTmpl       *template.Template
+	requestLimiter = newRateLimiter(rateLimitPerSecond, rateLimitBurst, rateLimiterClientTTL)
+	errOutsideRoot = errors.New("requested path escapes content root")
+)
 
 // ---------------------------------------------------------------------------
 // Main
@@ -93,8 +157,12 @@ var contentDir string
 
 func main() {
 	var port string
-	flag.StringVar(&port, "port", "8080", "Port to listen on")
+	var openBrowser bool
+	var allowNetwork bool
+	flag.StringVar(&port, "port", "", "Port to listen on (default: auto-select free port)")
 	flag.StringVar(&contentDir, "dir", ".", "Directory containing markdown files")
+	flag.BoolVar(&openBrowser, "open", true, "Open browser automatically after starting")
+	flag.BoolVar(&allowNetwork, "network", false, "Listen on all interfaces (LAN-accessible)")
 	flag.Parse()
 
 	if envPort := os.Getenv("PORT"); envPort != "" {
@@ -106,11 +174,484 @@ func main() {
 		contentDir = absPath
 	}
 
-	http.HandleFunc("/search-index.json", searchIndexHandler)
-	http.HandleFunc("/", handler)
+	info, err := os.Stat(contentDir)
+	if err != nil {
+		log.Fatalf("Invalid content directory: %v", err)
+	}
+	if !info.IsDir() {
+		log.Fatalf("Not a directory: %s", contentDir)
+	}
 
-	fmt.Printf("Starting server on http://localhost:%s serving from %s\n", port, contentDir)
-	log.Fatal(http.ListenAndServe(":"+port, nil))
+	realRoot, err := filepath.EvalSymlinks(contentDir)
+	if err != nil {
+		log.Fatalf("Failed to resolve content directory symlinks: %v", err)
+	}
+	contentRoot = filepath.Clean(realRoot)
+
+	highlightCSS = buildHighlightCSS()
+	if err := initTemplate(); err != nil {
+		log.Fatalf("Failed to parse templates: %v", err)
+	}
+
+	// Bind early so we know the actual port before printing/opening browser
+	ln, err := listen(port, allowNetwork)
+	if err != nil {
+		log.Fatalf("Failed to bind: %v", err)
+	}
+
+	actualPort := ln.Addr().(*net.TCPAddr).Port
+	localURL := fmt.Sprintf("http://localhost:%d", actualPort)
+	networkURL := "disabled (use --network to enable)"
+	if allowNetwork {
+		networkURL = fmt.Sprintf("http://%s:%d", localIP(), actualPort)
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/search", searchHandler)
+	mux.HandleFunc("/", handler)
+
+	srv := &http.Server{
+		Handler:           withSecurityGuards(mux),
+		ReadHeaderTimeout: serverHeaderTimeout,
+		ReadTimeout:       serverReadTimeout,
+		WriteTimeout:      serverWriteTimeout,
+		IdleTimeout:       serverIdleTimeout,
+		MaxHeaderBytes:    serverMaxHeaderBytes,
+	}
+
+	// Graceful shutdown on Ctrl+C / SIGTERM
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	go func() {
+		<-ctx.Done()
+		fmt.Println("\nShutting down...")
+		shutCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		srv.Shutdown(shutCtx)
+	}()
+
+	fmt.Printf("Serving docs from:  %s\n", contentDir)
+	fmt.Printf("Local:              %s\n", localURL)
+	fmt.Printf("Network:            %s\n", networkURL)
+	fmt.Println("Press Ctrl+C to stop.")
+
+	if openBrowser {
+		// Poll until the server is actually accepting connections, then open
+		go func() {
+			for i := 0; i < 20; i++ {
+				time.Sleep(50 * time.Millisecond)
+				conn, err := net.DialTimeout("tcp", fmt.Sprintf("localhost:%d", actualPort), 100*time.Millisecond)
+				if err == nil {
+					conn.Close()
+					break
+				}
+			}
+			openURL(localURL)
+		}()
+	}
+
+	if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
+		log.Fatal(err)
+	}
+}
+
+// listen binds to localhost by default, or all interfaces when network access is enabled.
+func listen(port string, allowNetwork bool) (net.Listener, error) {
+	host := "127.0.0.1"
+	if allowNetwork {
+		host = ""
+	}
+	if port == "" {
+		port = "0"
+	}
+	return net.Listen("tcp", net.JoinHostPort(host, port))
+}
+
+// openURL launches the system default browser cross-platform.
+func openURL(url string) {
+	var commands []*exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		commands = []*exec.Cmd{
+			exec.Command("open", url),
+		}
+	case "windows":
+		commands = []*exec.Cmd{
+			// Uses ShellExecute via Win32.
+			exec.Command("rundll32", "url.dll,FileProtocolHandler", url),
+		}
+	default:
+		commands = []*exec.Cmd{
+			exec.Command("xdg-open", url),
+		}
+	}
+
+	var lastErr error
+	for _, cmd := range commands {
+		cmd.Stdout = io.Discard
+		cmd.Stderr = io.Discard
+
+		// Start without waiting; some launchers can block with Run/Wait.
+		if err := cmd.Start(); err != nil {
+			lastErr = err
+			continue
+		}
+		go cmd.Wait()
+		return
+	}
+
+	if lastErr != nil {
+		log.Printf("Could not open browser for %s: %v", url, lastErr)
+	}
+}
+
+// localIP returns the machine's outbound LAN IP address.
+func localIP() string {
+	// Dial a public address over UDP; no traffic is sent, we just need the local IP.
+	conn, err := net.Dial("udp", "8.8.8.8:80")
+	if err != nil {
+		return "localhost"
+	}
+	defer conn.Close()
+	return conn.LocalAddr().(*net.UDPAddr).IP.String()
+}
+
+func buildHighlightCSS() template.CSS {
+	var cssBuf bytes.Buffer
+	formatter := chromahtml.New(chromahtml.WithClasses(true))
+	style := styles.Get("monokai")
+	if err := formatter.WriteCSS(&cssBuf, style); err != nil {
+		log.Printf("Error generating CSS: %v", err)
+		return ""
+	}
+	return template.CSS(cssBuf.String())
+}
+
+func initTemplate() error {
+	tmpl, err := template.New("layout").Funcs(funcMap).Parse(navNodeTmpl + layout)
+	if err != nil {
+		return err
+	}
+	pageTmpl = tmpl
+	return nil
+}
+
+func withSecurityGuards(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Body != nil {
+			r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+		}
+
+		ip := clientIPFromRemoteAddr(r.RemoteAddr)
+		if !requestLimiter.Allow(ip) {
+			writePlainError(w, http.StatusTooManyRequests, "Too many requests")
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+func writePlainError(w http.ResponseWriter, status int, message string) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(status)
+	if _, err := io.WriteString(w, message); err != nil {
+		log.Printf("Error writing response: %v", err)
+	}
+}
+
+func clientIPFromRemoteAddr(remoteAddr string) string {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		return remoteAddr
+	}
+	return host
+}
+
+func newRateLimiter(ratePerSecond, burst float64, clientTTL time.Duration) *rateLimiter {
+	return &rateLimiter{
+		clients:   make(map[string]*clientBucket),
+		rate:      ratePerSecond,
+		burst:     burst,
+		clientTTL: clientTTL,
+	}
+}
+
+func (l *rateLimiter) Allow(key string) bool {
+	if key == "" {
+		key = "unknown"
+	}
+
+	now := time.Now()
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if l.lastCleanup.IsZero() || now.Sub(l.lastCleanup) > time.Minute {
+		for clientKey, bucket := range l.clients {
+			if now.Sub(bucket.lastSeen) > l.clientTTL {
+				delete(l.clients, clientKey)
+			}
+		}
+		l.lastCleanup = now
+	}
+
+	bucket, ok := l.clients[key]
+	if !ok {
+		bucket = &clientBucket{
+			tokens:   l.burst,
+			lastSeen: now,
+		}
+		l.clients[key] = bucket
+	}
+
+	elapsed := now.Sub(bucket.lastSeen).Seconds()
+	bucket.tokens = math.Min(l.burst, bucket.tokens+elapsed*l.rate)
+	bucket.lastSeen = now
+
+	if bucket.tokens < 1 {
+		return false
+	}
+
+	bucket.tokens--
+	return true
+}
+
+func normalizeRequestPath(urlPath string) string {
+	cleaned := path.Clean("/" + urlPath)
+	cleaned = strings.TrimPrefix(cleaned, "/")
+	if cleaned == "." {
+		return ""
+	}
+	return cleaned
+}
+
+func isPathWithinRoot(root, target string) bool {
+	root = filepath.Clean(root)
+	target = filepath.Clean(target)
+
+	if runtime.GOOS == "windows" {
+		root = strings.ToLower(root)
+		target = strings.ToLower(target)
+	}
+
+	if target == root {
+		return true
+	}
+	return strings.HasPrefix(target, root+string(filepath.Separator))
+}
+
+func resolvePathWithinRoot(relPath string) (string, error) {
+	candidate := filepath.Join(contentDir, filepath.FromSlash(relPath))
+	candidateAbs, err := filepath.Abs(candidate)
+	if err != nil {
+		return "", err
+	}
+
+	if !isPathWithinRoot(contentDir, candidateAbs) {
+		return "", errOutsideRoot
+	}
+
+	resolved, err := filepath.EvalSymlinks(candidateAbs)
+	if err == nil {
+		if !isPathWithinRoot(contentRoot, resolved) {
+			return "", errOutsideRoot
+		}
+		return candidateAbs, nil
+	}
+
+	if os.IsNotExist(err) {
+		return candidateAbs, nil
+	}
+
+	return "", err
+}
+
+func resolveRequestedFile(urlPath string) (string, error) {
+	requestPath := normalizeRequestPath(urlPath)
+	if requestPath == "" {
+		requestPath = "README.md"
+	}
+
+	candidates := []string{requestPath}
+	if !strings.HasSuffix(strings.ToLower(requestPath), ".md") {
+		candidates = append(candidates, requestPath+".md")
+	}
+
+	for _, relPath := range candidates {
+		fullPath, err := resolvePathWithinRoot(relPath)
+		if err != nil {
+			if errors.Is(err, errOutsideRoot) {
+				return "", err
+			}
+			continue
+		}
+
+		info, err := os.Stat(fullPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return "", err
+		}
+
+		if info.IsDir() {
+			readmeRel := path.Join(filepath.ToSlash(relPath), "README.md")
+			readmePath, err := resolvePathWithinRoot(readmeRel)
+			if err != nil {
+				if errors.Is(err, errOutsideRoot) {
+					return "", err
+				}
+				continue
+			}
+			readmeInfo, err := os.Stat(readmePath)
+			if err == nil && !readmeInfo.IsDir() {
+				return readmePath, nil
+			}
+			continue
+		}
+
+		return fullPath, nil
+	}
+
+	return "", os.ErrNotExist
+}
+
+func getSearchIndex() []SearchEntry {
+	cache.mu.RLock()
+	stale := len(cache.index) == 0 || time.Since(cache.builtAt) > searchCacheTTL
+	cache.mu.RUnlock()
+
+	if stale {
+		cache.mu.Lock()
+		if len(cache.index) == 0 || time.Since(cache.builtAt) > searchCacheTTL {
+			cache.index = buildSearchIndex(contentDir, "")
+			cache.builtAt = time.Now()
+		}
+		cache.mu.Unlock()
+	}
+
+	cache.mu.RLock()
+	index := make([]SearchEntry, len(cache.index))
+	copy(index, cache.index)
+	cache.mu.RUnlock()
+
+	return index
+}
+
+func getNavTree() []*Node {
+	navCache.mu.RLock()
+	stale := len(navCache.tree) == 0 || time.Since(navCache.builtAt) > navCacheTTL
+	navCache.mu.RUnlock()
+
+	if stale {
+		navCache.mu.Lock()
+		if len(navCache.tree) == 0 || time.Since(navCache.builtAt) > navCacheTTL {
+			navCache.tree = buildNav(contentDir, "")
+			navCache.builtAt = time.Now()
+		}
+		navCache.mu.Unlock()
+	}
+
+	navCache.mu.RLock()
+	tree := navCache.tree
+	navCache.mu.RUnlock()
+	return tree
+}
+
+func searchDocs(query string) []SearchResult {
+	trimmed := strings.TrimSpace(query)
+	if trimmed == "" {
+		return nil
+	}
+	if len(trimmed) > maxSearchQueryLength {
+		trimmed = trimmed[:maxSearchQueryLength]
+	}
+
+	q := strings.ToLower(trimmed)
+	index := getSearchIndex()
+	matches := make([]searchMatch, 0, maxSearchResults)
+
+	for _, entry := range index {
+		titleLower := strings.ToLower(entry.Title)
+		contentLower := strings.ToLower(entry.Content)
+		titleMatch := strings.Contains(titleLower, q)
+		contentIdx := strings.Index(contentLower, q)
+		if !titleMatch && contentIdx < 0 {
+			continue
+		}
+
+		matches = append(matches, searchMatch{
+			result: SearchResult{
+				Title:   entry.Title,
+				Path:    entry.Path,
+				Snippet: getSnippet(entry.Content, q),
+			},
+			titleMatch: titleMatch,
+		})
+	}
+
+	sort.SliceStable(matches, func(i, j int) bool {
+		if matches[i].titleMatch != matches[j].titleMatch {
+			return matches[i].titleMatch
+		}
+		return matches[i].result.Title < matches[j].result.Title
+	})
+
+	if len(matches) > maxSearchResults {
+		matches = matches[:maxSearchResults]
+	}
+
+	results := make([]SearchResult, len(matches))
+	for i := range matches {
+		results[i] = matches[i].result
+	}
+	return results
+}
+
+func getSnippet(text, q string) string {
+	idx := strings.Index(strings.ToLower(text), q)
+	if idx < 0 {
+		return ""
+	}
+	start := max(0, idx-40)
+	end := min(len(text), idx+len(q)+80)
+	snippet := strings.ReplaceAll(text[start:end], "\n", " ")
+	snippet = strings.TrimSpace(snippet)
+	if start > 0 {
+		snippet = "..." + snippet
+	}
+	if end < len(text) {
+		snippet += "..."
+	}
+	return snippet
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func activePathFor(fullPath string) string {
+	relActive, err := filepath.Rel(contentDir, fullPath)
+	if err != nil {
+		return "README.md"
+	}
+	relActive = filepath.ToSlash(relActive)
+	if relActive == "." || strings.HasPrefix(relActive, "../") {
+		return "README.md"
+	}
+	return relActive
 }
 
 // ---------------------------------------------------------------------------
@@ -118,106 +659,75 @@ func main() {
 // ---------------------------------------------------------------------------
 
 func handler(w http.ResponseWriter, r *http.Request) {
-	path := strings.TrimPrefix(r.URL.Path, "/")
-	if path == "" {
-		path = "README.md"
-	}
-
-	fullPath := filepath.Join(contentDir, path)
-	info, err := os.Stat(fullPath)
+	fullPath, err := resolveRequestedFile(r.URL.Path)
 	if err != nil {
-		if os.IsNotExist(err) && !strings.HasSuffix(path, ".md") {
-			fullPath += ".md"
-			info, err = os.Stat(fullPath)
-		}
-	}
-
-	if err != nil || (info != nil && info.IsDir()) {
-		if info != nil && info.IsDir() {
-			readme := filepath.Join(fullPath, "README.md")
-			if _, err := os.Stat(readme); err == nil {
-				fullPath = readme
-			} else {
-				http.NotFound(w, r)
-				return
-			}
-		} else {
+		if errors.Is(err, errOutsideRoot) || errors.Is(err, os.ErrNotExist) {
 			http.NotFound(w, r)
 			return
 		}
+		log.Printf("Path resolution error: %v", err)
+		writePlainError(w, http.StatusInternalServerError, "Error resolving file")
+		return
 	}
 
 	content, err := os.ReadFile(fullPath)
 	if err != nil {
-		http.Error(w, "Error reading file", 500)
+		writePlainError(w, http.StatusInternalServerError, "Error reading file")
 		return
 	}
 
 	var buf bytes.Buffer
 	if err := md.Convert(content, &buf); err != nil {
-		http.Error(w, "Error rendering markdown", 500)
+		writePlainError(w, http.StatusInternalServerError, "Error rendering markdown")
 		return
 	}
 
-	// Partial response for SPA fetch requests — only the inner content HTML
+	// Partial response for SPA fetch requests - only the inner content HTML
 	if r.Header.Get("X-Requested-With") == "spa-fetch" {
-		relActive, _ := filepath.Rel(contentDir, fullPath)
-		relActive = filepath.ToSlash(relActive)
+		relActive := activePathFor(fullPath)
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{
+		if err := json.NewEncoder(w).Encode(map[string]string{
 			"content": buf.String(),
 			"title":   filepath.Base(fullPath),
 			"active":  relActive,
-		})
+		}); err != nil {
+			log.Printf("Failed to encode SPA response: %v", err)
+		}
 		return
 	}
 
-	nav := buildNav(contentDir, "")
-
-	var cssBuf bytes.Buffer
-	formatter := chromahtml.New(chromahtml.WithClasses(true))
-	style := styles.Get("monokai")
-	if err := formatter.WriteCSS(&cssBuf, style); err != nil {
-		log.Printf("Error generating CSS: %v", err)
-	}
-
-	relActive, _ := filepath.Rel(contentDir, fullPath)
-	relActive = filepath.ToSlash(relActive)
+	nav := getNavTree()
+	relActive := activePathFor(fullPath)
 
 	data := PageData{
 		Title:   filepath.Base(fullPath),
 		Content: template.HTML(buf.String()),
 		Nav:     nav,
 		Active:  relActive,
-		Style:   template.CSS(cssBuf.String()),
+		Style:   highlightCSS,
 	}
 
 	renderTemplate(w, data)
 }
 
 // ---------------------------------------------------------------------------
-// Search index handler
+// Search handler
 // ---------------------------------------------------------------------------
 
-func searchIndexHandler(w http.ResponseWriter, r *http.Request) {
-	cache.mu.RLock()
-	age := time.Since(cache.builtAt)
-	cache.mu.RUnlock()
-
-	if age > 30*time.Second {
-		index := buildSearchIndex(contentDir, "")
-		cache.mu.Lock()
-		cache.index = index
-		cache.builtAt = time.Now()
-		cache.mu.Unlock()
+func searchHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		writePlainError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
 	}
 
-	cache.mu.RLock()
-	defer cache.mu.RUnlock()
-
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "no-cache")
-	json.NewEncoder(w).Encode(cache.index)
+	w.Header().Set("Cache-Control", "no-store")
+
+	results := searchDocs(r.URL.Query().Get("q"))
+	if err := json.NewEncoder(w).Encode(results); err != nil {
+		log.Printf("Failed to encode search response: %v", err)
+	}
 }
 
 func buildSearchIndex(baseDir, subDir string) []SearchEntry {
@@ -230,6 +740,9 @@ func buildSearchIndex(baseDir, subDir string) []SearchEntry {
 	for _, e := range dirEntries {
 		name := e.Name()
 		if strings.HasPrefix(name, ".") || name == "node_modules" || name == "vendor" {
+			continue
+		}
+		if e.Type()&os.ModeSymlink != 0 {
 			continue
 		}
 		relPath := filepath.Join(subDir, name)
@@ -271,6 +784,9 @@ func buildNav(baseDir, subDir string) []*Node {
 	for _, entry := range entries {
 		name := entry.Name()
 		if strings.HasPrefix(name, ".") || skipNames[name] {
+			continue
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
 			continue
 		}
 		relPath := filepath.Join(subDir, name)
@@ -626,9 +1142,6 @@ const layout = `<!DOCTYPE html>
   <div id="progress"></div>
 
   <aside id="sidebar">
-    <div id="sidebar-header">
-      <a href="/" class="site-name" data-spa>📄 Docs</a>
-    </div>
     <div id="search-wrap">
       <span id="search-icon">🔍</span>
       <input id="search" type="search" placeholder="Search…" autocomplete="off" spellcheck="false">
@@ -637,7 +1150,7 @@ const layout = `<!DOCTYPE html>
     <div id="sidebar-inner">
       <nav id="nav-tree">
         <ul>
-          <li><a href="/" data-spa class="{{if eq .Active "README.md"}}active{{end}}">🏠 Home</a></li>
+          <li><a href="/" data-spa class="{{if eq .Active "README.md"}}active{{end}}">Home</a></li>
           {{range .Nav}}{{template "navNode" (dict "Node" . "Active" $.Active)}}{{end}}
         </ul>
       </nav>
@@ -658,13 +1171,12 @@ const layout = `<!DOCTYPE html>
     </div>
   </div>
 
-  <button id="sidebar-toggle" onclick="toggleSidebar()" title="Toggle sidebar">☰</button>
+  <button id="sidebar-toggle" onclick="toggleSidebar()" title="Toggle sidebar">Menu</button>
 
 <script>
 // ── State ──────────────────────────────────────────────────────────────────
 const OPEN_DIRS_KEY = 'openDirs';
-let searchIndex = null;
-let searchLoading = false;
+let searchRequestCounter = 0;
 let currentActive = {{.Active | js}};
 
 // ── Progress bar ───────────────────────────────────────────────────────────
@@ -842,25 +1354,14 @@ function expandActiveFolders() {
 }
 
 // ── Search ─────────────────────────────────────────────────────────────────
-async function loadSearchIndex() {
-  if (searchIndex || searchLoading) return;
-  searchLoading = true;
-  try {
-    const res = await fetch('/search-index.json');
-    searchIndex = await res.json();
-  } catch (e) { console.error('Search index load failed', e); }
-  searchLoading = false;
-}
-
 const searchInput = document.getElementById('search');
 const searchResults = document.getElementById('search-results');
 let searchDebounce;
 let focusedIdx = -1;
 
-searchInput.addEventListener('focus', loadSearchIndex);
 searchInput.addEventListener('input', () => {
   clearTimeout(searchDebounce);
-  searchDebounce = setTimeout(doSearch, 80);
+  searchDebounce = setTimeout(() => { void doSearch(); }, 120);
 });
 
 searchInput.addEventListener('keydown', e => {
@@ -876,45 +1377,38 @@ function updateFocus(items) {
   items[focusedIdx]?.scrollIntoView({ block: 'nearest' });
 }
 
-function doSearch() {
-  const q = searchInput.value.trim().toLowerCase();
-  if (!q || !searchIndex) { searchResults.style.display = 'none'; return; }
+async function doSearch() {
+  const q = searchInput.value.trim();
+  if (!q) { searchResults.style.display = 'none'; return; }
 
-  const results = [];
-  for (const entry of searchIndex) {
-    const titleMatch = entry.title.toLowerCase().includes(q);
-    const contentMatch = entry.content.toLowerCase().includes(q);
-    if (titleMatch || contentMatch) {
-      results.push({ entry, titleMatch });
+  const requestId = ++searchRequestCounter;
+  try {
+    const res = await fetch('/search?q=' + encodeURIComponent(q), { headers: { 'X-Requested-With': 'spa-fetch' } });
+    if (!res.ok) { searchResults.style.display = 'none'; return; }
+
+    const results = await res.json();
+    if (requestId !== searchRequestCounter) return;
+
+    if (!Array.isArray(results) || results.length === 0) {
+      searchResults.innerHTML = '<a style="color:var(--muted);cursor:default">No results</a>';
+      searchResults.style.display = 'block';
+      return;
     }
-    if (results.length >= 12) break;
-  }
-  results.sort((a, b) => (b.titleMatch ? 1 : 0) - (a.titleMatch ? 1 : 0));
 
-  if (results.length === 0) {
-    searchResults.innerHTML = '<a style="color:var(--muted);cursor:default">No results</a>';
+    searchResults.innerHTML = results.map(entry => {
+      return '<a href="/' + entry.path + '" data-spa>' +
+        '<div class="res-title">' + escHtml(entry.title || '') + '</div>' +
+        (entry.snippet ? '<div class="res-snippet">' + escHtml(entry.snippet) + '</div>' : '') +
+        '</a>';
+    }).join('');
+
     searchResults.style.display = 'block';
-    return;
+    focusedIdx = -1;
+  } catch (e) {
+    if (requestId === searchRequestCounter) {
+      searchResults.style.display = 'none';
+    }
   }
-
-  searchResults.innerHTML = results.map(({ entry }) => {
-    const snippet = getSnippet(entry.content, q);
-    return '<a href="/' + entry.path + '" data-spa>' +
-      '<div class="res-title">' + escHtml(entry.title) + '</div>' +
-      (snippet ? '<div class="res-snippet">' + escHtml(snippet) + '</div>' : '') +
-      '</a>';
-  }).join('');
-
-  searchResults.style.display = 'block';
-  focusedIdx = -1;
-}
-
-function getSnippet(text, q) {
-  const idx = text.toLowerCase().indexOf(q);
-  if (idx < 0) return '';
-  const start = Math.max(0, idx - 30);
-  const end = Math.min(text.length, idx + q.length + 60);
-  return (start > 0 ? '…' : '') + text.slice(start, end).trim() + (end < text.length ? '…' : '');
 }
 
 function escHtml(s) {
@@ -963,7 +1457,7 @@ const navNodeTmpl = `{{define "navNode"}}
 {{if $node.IsDir}}
   <li>
     <div class="dir-row" data-path="{{$node.Path}}">
-      <span class="dir-label">📁 {{$node.Name}}</span>
+      <span class="dir-label">{{$node.Name}}</span>
       <span class="dir-toggle">▶</span>
     </div>
     <ul class="dir-children collapsed">
@@ -972,19 +1466,18 @@ const navNodeTmpl = `{{define "navNode"}}
   </li>
 {{else}}
   {{if ne $node.Name "README"}}
-  <li><a href="/{{$node.Path}}" data-spa class="{{if eq $active $node.Path}}active{{end}}">📄 {{$node.Name}}</a></li>
+  <li><a href="/{{$node.Path}}" data-spa class="{{if eq $active $node.Path}}active{{end}}">{{$node.Name}}</a></li>
   {{end}}
 {{end}}
 {{end}}`
 
 func renderTemplate(w http.ResponseWriter, data PageData) {
-	tmpl, err := template.New("layout").Funcs(funcMap).Parse(navNodeTmpl + layout)
-	if err != nil {
-		http.Error(w, "Template error: "+err.Error(), 500)
+	if pageTmpl == nil {
+		writePlainError(w, http.StatusInternalServerError, "Template not initialized")
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := tmpl.ExecuteTemplate(w, "layout", data); err != nil {
+	if err := pageTmpl.ExecuteTemplate(w, "layout", data); err != nil {
 		log.Printf("Template execute error: %v", err)
 	}
 }
