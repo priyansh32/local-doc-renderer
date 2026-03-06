@@ -1,4 +1,4 @@
-module learning-site
+module github.com/priyansh32/local-doc-renderer
 
 go 1.25.0
 

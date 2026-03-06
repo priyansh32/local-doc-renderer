@@ -1,0 +1,16 @@
+version: 1
+
+# Target platform
+goos: linux
+goarch: amd64
+
+# Output binary name
+binary: local-doc-renderer-{{ .Os }}-{{ .Arch }}
+
+# Recommended build settings
+env:
+  - CGO_ENABLED=0
+flags:
+  - -trimpath
+
+main: ./main.go

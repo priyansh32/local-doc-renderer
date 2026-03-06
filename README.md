@@ -1,6 +1,6 @@
-# Learning Site Engine
+# Local Doc Renderer
 
-A simple Markdown-based learning site engine written in Go. It renders Markdown files from a directory into a navigable web interface.
+A simple Markdown-based documentation renderer written in Go. It renders Markdown files from a directory into a navigable web interface.
 
 ## Features
 
@@ -13,10 +13,10 @@ A simple Markdown-based learning site engine written in Go. It renders Markdown 
 
 ### Running the pre-built binary
 
-You can run the `learning-site.exe` binary directly. By default, it looks for Markdown files in the current directory.
+You can run the `local-doc-renderer` binary directly. By default, it looks for Markdown files in the current directory.
 
 ```bash
-./learning-site.exe --dir path/to/markdown/files
+./local-doc-renderer --dir path/to/markdown/files
 ```
 
 Options:
@@ -28,7 +28,7 @@ Options:
 If you have Go installed, you can build the binary yourself:
 
 ```bash
-go build -o learning-site.exe main.go
+go build -o local-doc-renderer main.go
 ```
 
 ## Project Structure

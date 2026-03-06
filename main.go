@@ -192,7 +192,7 @@ const layout = `
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{.Title}} - Learning Site</title>
+    <title>{{.Title}} - Local Doc Renderer</title>
     <style>
         :root {
             --sidebar-width: 300px;
