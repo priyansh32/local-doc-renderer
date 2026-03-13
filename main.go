@@ -610,7 +610,7 @@ func searchDocs(query string) []SearchResult {
 			result: SearchResult{
 				Title:   entry.Title,
 				Path:    entry.Path,
-				Snippet: getSnippet(entry.Content, q, contentIdx),
+				Snippet: getSnippet(entry.Content, trimmed),
 			},
 			titleMatch: titleMatch,
 		})
@@ -634,18 +634,33 @@ func searchDocs(query string) []SearchResult {
 	return results
 }
 
-func getSnippet(text, q string, idx int) string {
-	if idx < 0 || idx >= len(text) {
+func getSnippet(text, query string) string {
+	textRunes := []rune(text)
+	queryRunes := []rune(query)
+	if len(textRunes) == 0 || len(queryRunes) == 0 {
 		return ""
 	}
-	start := max(0, idx-40)
-	end := min(len(text), idx+len(q)+80)
-	snippet := strings.ReplaceAll(text[start:end], "\n", " ")
+
+	matchRuneIdx := -1
+	queryRuneLen := len(queryRunes)
+	for i := 0; i+queryRuneLen <= len(textRunes); i++ {
+		if strings.EqualFold(string(textRunes[i:i+queryRuneLen]), query) {
+			matchRuneIdx = i
+			break
+		}
+	}
+	if matchRuneIdx < 0 {
+		return ""
+	}
+
+	start := max(0, matchRuneIdx-40)
+	end := min(len(textRunes), matchRuneIdx+queryRuneLen+80)
+	snippet := strings.ReplaceAll(string(textRunes[start:end]), "\n", " ")
 	snippet = strings.TrimSpace(snippet)
 	if start > 0 {
 		snippet = "..." + snippet
 	}
-	if end < len(text) {
+	if end < len(textRunes) {
 		snippet += "..."
 	}
 	return snippet
