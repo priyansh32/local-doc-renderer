@@ -1217,6 +1217,7 @@ async function navigate(url, pushState = true) {
     // Home special case
     const homeLink = document.querySelector('#nav-tree a[href="/"]');
     if (homeLink) homeLink.classList.toggle('active', currentActive === 'README.md');
+    expandActiveFolders();
 
     buildTOC();
     scrollToTop();
@@ -1465,7 +1466,7 @@ const navNodeTmpl = `{{define "navNode"}}
     </ul>
   </li>
 {{else}}
-  {{if ne $node.Name "README"}}
+  {{if ne $node.Path "README.md"}}
   <li><a href="/{{$node.Path}}" data-spa class="{{if eq $active $node.Path}}active{{end}}">{{$node.Name}}</a></li>
   {{end}}
 {{end}}
