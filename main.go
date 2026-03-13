@@ -610,7 +610,7 @@ func searchDocs(query string) []SearchResult {
 			result: SearchResult{
 				Title:   entry.Title,
 				Path:    entry.Path,
-				Snippet: getSnippet(entry.Content, entry.ContentLower, q),
+				Snippet: getSnippet(entry.Content, q, contentIdx),
 			},
 			titleMatch: titleMatch,
 		})
@@ -634,9 +634,8 @@ func searchDocs(query string) []SearchResult {
 	return results
 }
 
-func getSnippet(text, textLower, q string) string {
-	idx := strings.Index(textLower, q)
-	if idx < 0 {
+func getSnippet(text, q string, idx int) string {
+	if idx < 0 || idx >= len(text) {
 		return ""
 	}
 	start := max(0, idx-40)
