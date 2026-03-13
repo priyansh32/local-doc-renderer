@@ -21,3 +21,4 @@ go.work
 .gomodcache
 
 .env
+local-doc-renderer
