@@ -1,0 +1,921 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Local Doc Renderer</title>
+  <meta name="description" content="Local-first Markdown viewer with Mermaid support for agent-driven workflows.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,500;1,400&family=DM+Mono:wght@400;500&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #faf9f6;
+      --surface: #ffffff;
+      --ink: #1c1c1a;
+      --muted: #6b6b66;
+      --faint: #e8e6e0;
+      --accent: #2d6a4f;
+      --accent-light: #e8f0eb;
+      --mono: "DM Mono", monospace;
+      --serif: "Lora", Georgia, serif;
+      --sans: "DM Sans", system-ui, sans-serif;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      font-family: var(--sans);
+      background: var(--bg);
+      color: var(--ink);
+      font-size: 16px;
+      line-height: 1.65;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .container {
+      max-width: 780px;
+      margin: 0 auto;
+      padding: 0 1.5rem;
+    }
+
+    /* NAV */
+    nav {
+      padding: 1.5rem 0;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .logo {
+      font-family: var(--serif);
+      font-size: 1.05rem;
+      color: var(--ink);
+      text-decoration: none;
+      letter-spacing: -0.01em;
+    }
+
+    .nav-links {
+      display: flex;
+      gap: 1.5rem;
+      list-style: none;
+    }
+
+    .nav-links a {
+      font-size: 0.875rem;
+      color: var(--muted);
+      text-decoration: none;
+      transition: color 200ms;
+    }
+
+    .nav-links a:hover { color: var(--ink); }
+
+    /* DIVIDER */
+    .rule {
+      border: none;
+      border-top: 1px solid var(--faint);
+      margin: 0;
+    }
+
+    /* HERO */
+    .hero {
+      padding: 5rem 0 3.5rem;
+    }
+
+    .hero-copy {
+      max-width: 56ch;
+    }
+
+    .hero-kicker {
+      font-family: var(--mono);
+      font-size: 0.75rem;
+      color: var(--accent);
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      margin-bottom: 1.25rem;
+      display: block;
+    }
+
+    .hero h1 {
+      font-family: var(--serif);
+      font-size: clamp(2rem, 5vw, 3rem);
+      font-weight: 400;
+      line-height: 1.18;
+      letter-spacing: -0.02em;
+      color: var(--ink);
+      max-width: 16ch;
+      margin-bottom: 1.25rem;
+    }
+
+    .hero h1 em {
+      font-style: italic;
+      color: var(--accent);
+    }
+
+    .hero-body {
+      font-size: 1.05rem;
+      color: var(--muted);
+      max-width: 54ch;
+      margin-bottom: 2rem;
+      font-weight: 300;
+      line-height: 1.7;
+    }
+
+    .cta-row {
+      display: flex;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    .btn-primary {
+      background: var(--ink);
+      color: #fff;
+      padding: 0.65rem 1.25rem;
+      border-radius: 6px;
+      text-decoration: none;
+      font-size: 0.9rem;
+      font-weight: 500;
+      letter-spacing: 0.01em;
+      transition: background 200ms;
+    }
+
+    .btn-primary:hover { background: #2f2f2b; }
+
+    .btn-ghost {
+      color: var(--muted);
+      padding: 0.65rem 1.25rem;
+      border-radius: 6px;
+      text-decoration: none;
+      font-size: 0.9rem;
+      font-weight: 400;
+      border: 1px solid var(--faint);
+      background: var(--surface);
+      transition: border-color 200ms, color 200ms;
+    }
+
+    .btn-ghost:hover { border-color: #c5c3bd; color: var(--ink); }
+
+    /* CODE SNIPPET HERO BLOCK */
+    .code-block {
+      margin-top: 2.5rem;
+      background: var(--surface);
+      border: 1px solid var(--faint);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    .code-block-bar {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 0.6rem 0.85rem;
+      border-bottom: 1px solid var(--faint);
+    }
+
+    .dot {
+      width: 10px; height: 10px;
+      border-radius: 50%;
+    }
+
+    .dot-r { background: #ffb3b3; }
+    .dot-y { background: #ffd6a5; }
+    .dot-g { background: #b5ead7; }
+
+    .code-block-label {
+      font-family: var(--mono);
+      font-size: 0.7rem;
+      color: var(--muted);
+      margin-left: auto;
+    }
+
+    .code-block pre {
+      padding: 1rem 1rem;
+      font-family: var(--mono);
+      font-size: 0.8rem;
+      line-height: 1.65;
+      color: #3a3a36;
+      white-space: pre-wrap;
+    }
+
+    .t-green { color: var(--accent); }
+    .t-muted { color: var(--muted); }
+
+    /* SECTION BASE */
+    section {
+      padding: 3.5rem 0;
+    }
+
+    section + section {
+      border-top: 1px solid var(--faint);
+    }
+
+    .section-label {
+      font-family: var(--mono);
+      font-size: 0.7rem;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 1rem;
+      display: block;
+    }
+
+    .section-title {
+      font-family: var(--serif);
+      font-size: clamp(1.5rem, 3vw, 2rem);
+      font-weight: 400;
+      letter-spacing: -0.02em;
+      line-height: 1.25;
+      margin-bottom: 0.75rem;
+    }
+
+    .section-body {
+      color: var(--muted);
+      font-size: 0.975rem;
+      max-width: 56ch;
+      margin-bottom: 2rem;
+      font-weight: 300;
+      line-height: 1.7;
+    }
+
+    /* FEATURES */
+    .features-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1px;
+      background: var(--faint);
+      border: 1px solid var(--faint);
+      border-radius: 10px;
+      overflow: hidden;
+    }
+
+    .feature {
+      background: var(--surface);
+      padding: 1.25rem 1.25rem;
+    }
+
+    .feature-icon {
+      font-family: var(--mono);
+      font-size: 0.72rem;
+      color: var(--accent);
+      margin-bottom: 0.5rem;
+      display: block;
+    }
+
+    .feature h3 {
+      font-size: 0.95rem;
+      font-weight: 500;
+      margin-bottom: 0.35rem;
+      letter-spacing: -0.01em;
+    }
+
+    .feature p {
+      font-size: 0.875rem;
+      color: var(--muted);
+      line-height: 1.55;
+      font-weight: 300;
+    }
+
+    /* WORKFLOW */
+    .steps {
+      display: grid;
+      gap: 0;
+    }
+
+    .step {
+      display: grid;
+      grid-template-columns: 2.5rem 1fr;
+      gap: 0 1rem;
+      padding: 1.25rem 0;
+      border-bottom: 1px solid var(--faint);
+    }
+
+    .step:last-child { border-bottom: none; }
+
+    .step-num {
+      font-family: var(--mono);
+      font-size: 0.75rem;
+      color: var(--muted);
+      padding-top: 3px;
+    }
+
+    .step-content h3 {
+      font-size: 0.975rem;
+      font-weight: 500;
+      margin-bottom: 0.3rem;
+    }
+
+    .step-content p {
+      font-size: 0.875rem;
+      color: var(--muted);
+      font-weight: 300;
+      line-height: 1.6;
+    }
+
+    /* RUN COMMAND */
+    .run-block {
+      background: var(--ink);
+      color: #e8e6e0;
+      border-radius: 8px;
+      padding: 1.5rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 1rem;
+    }
+
+    .run-label {
+      font-size: 0.875rem;
+      color: #9a9990;
+      font-weight: 300;
+    }
+
+    .run-cmd {
+      font-family: var(--mono);
+      font-size: 1rem;
+      color: #b5ead7;
+      letter-spacing: 0.01em;
+    }
+
+    /* DOWNLOAD */
+    .download-status {
+      font-size: 0.9rem;
+      color: var(--muted);
+      padding: 1.5rem;
+      background: var(--surface);
+      border: 1px solid var(--faint);
+      border-radius: 8px;
+    }
+
+    .version-row {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      margin-bottom: 1rem;
+      flex-wrap: wrap;
+    }
+
+    select {
+      font: inherit;
+      font-family: var(--mono);
+      font-size: 0.82rem;
+      color: var(--ink);
+      background: var(--surface);
+      border: 1px solid var(--faint);
+      border-radius: 6px;
+      padding: 0.5rem 0.7rem;
+      min-width: 200px;
+      cursor: pointer;
+    }
+
+    .badge {
+      font-family: var(--mono);
+      font-size: 0.68rem;
+      padding: 0.2rem 0.45rem;
+      border-radius: 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .badge-latest { background: var(--accent-light); color: var(--accent); }
+    .badge-pre { background: #fef3cd; color: #7a5c00; }
+    .badge-draft { background: #fde8d4; color: #7a3a10; }
+
+    .version-date {
+      font-size: 0.82rem;
+      color: var(--muted);
+      margin-bottom: 1.25rem;
+      font-family: var(--mono);
+    }
+
+    .platform-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.5rem;
+      margin-bottom: 1rem;
+    }
+
+    .asset-link {
+      display: block;
+      text-decoration: none;
+      padding: 0.75rem 0.85rem;
+      border: 1px solid var(--faint);
+      border-radius: 7px;
+      background: var(--surface);
+      transition: border-color 200ms;
+    }
+
+    .asset-link:hover { border-color: var(--accent); }
+
+    .asset-link.recommended {
+      border-color: var(--accent);
+      background: var(--accent-light);
+    }
+
+    .asset-link.missing {
+      opacity: 0.45;
+      pointer-events: none;
+      border-style: dashed;
+    }
+
+    .asset-platform {
+      font-family: var(--mono);
+      font-size: 0.72rem;
+      color: var(--accent);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 0.2rem;
+    }
+
+    .asset-filename {
+      font-family: var(--mono);
+      font-size: 0.68rem;
+      color: var(--muted);
+      word-break: break-all;
+      margin-bottom: 0.2rem;
+      line-height: 1.4;
+    }
+
+    .asset-size {
+      font-size: 0.78rem;
+      font-weight: 500;
+      color: var(--ink);
+    }
+
+    .download-footer {
+      display: flex;
+      gap: 1rem;
+      flex-wrap: wrap;
+      font-size: 0.82rem;
+    }
+
+    .download-footer a {
+      color: var(--muted);
+      text-decoration: none;
+    }
+
+    .download-footer a:hover { color: var(--ink); }
+
+    details {
+      margin-top: 0.75rem;
+    }
+
+    summary {
+      font-size: 0.8rem;
+      color: var(--muted);
+      cursor: pointer;
+      user-select: none;
+      font-family: var(--mono);
+    }
+
+    .prov-list {
+      margin-top: 0.5rem;
+      display: grid;
+      gap: 0.3rem;
+    }
+
+    .prov-list a {
+      font-family: var(--mono);
+      font-size: 0.7rem;
+      color: var(--muted);
+      text-decoration: none;
+      padding: 0.3rem 0.5rem;
+      background: var(--bg);
+      border: 1px solid var(--faint);
+      border-radius: 5px;
+      display: block;
+    }
+
+    .prov-list a:hover { color: var(--ink); }
+
+    /* FOOTER */
+    footer {
+      margin-top: 0.5rem;
+      padding: 2.1rem 0 2.4rem;
+      border-top: 1px solid var(--faint);
+    }
+
+    .footer-inner {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 0.7rem 1.4rem;
+    }
+
+    .footer-brand {
+      font-size: 0.82rem;
+      color: var(--muted);
+    }
+
+    .footer-links {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 0.55rem;
+      font-size: 0.82rem;
+      color: var(--muted);
+    }
+
+    .footer-links a {
+      color: var(--muted);
+      text-decoration: none;
+    }
+
+    .footer-links a:hover { color: var(--ink); }
+
+    .footer-dot {
+      color: #b3afa6;
+      user-select: none;
+    }
+
+    /* FADE IN */
+    @keyframes fadein {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .fade { opacity: 0; }
+    .fade.visible {
+      animation: fadein 500ms cubic-bezier(0.4, 0, 0.2, 1) forwards;
+    }
+
+    @media (min-width: 900px) {
+      .container { max-width: 920px; padding: 0 2rem; }
+
+      nav { padding: 1.9rem 0 1.2rem; }
+
+      .hero {
+        padding: 5.8rem 0 4.25rem;
+        display: grid;
+        grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr);
+        gap: 2rem;
+        align-items: start;
+      }
+
+      .hero-body { max-width: 50ch; font-size: 1.08rem; }
+      .code-block { margin-top: 0.15rem; }
+
+      section { padding: 4.2rem 0; }
+      .section-body { font-size: 1rem; max-width: 64ch; }
+
+      .feature { padding: 1.35rem; }
+      .platform-grid { grid-template-columns: repeat(3, 1fr); }
+    }
+
+    @media (min-width: 1200px) {
+      .container { max-width: 980px; }
+      .hero h1 { font-size: clamp(2.6rem, 4.8vw, 3.6rem); }
+    }
+
+    @media (max-width: 560px) {
+      .features-grid, .platform-grid { grid-template-columns: 1fr; }
+      .nav-links { gap: 1rem; }
+      .footer-inner { align-items: flex-start; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .fade, .fade.visible { animation: none; opacity: 1; }
+    }
+  </style>
+</head>
+<body>
+
+<div class="container">
+
+  <nav class="fade">
+    <a class="logo" href="#">Local Doc Renderer</a>
+    <ul class="nav-links">
+      <li><a href="#features">Features</a></li>
+      <li><a href="#workflow">Workflow</a></li>
+      <li><a href="#download">Download</a></li>
+      <li><a href="https://github.com/priyansh32/local-doc-renderer">GitHub</a></li>
+    </ul>
+  </nav>
+
+  <hr class="rule">
+
+  <div class="hero fade" style="animation-delay: 80ms;">
+    <div class="hero-copy">
+      <span class="hero-kicker">local-first · single binary · mermaid</span>
+      <h1>Markdown that reads like <em>docs.</em></h1>
+      <p class="hero-body">
+        If you learn with agents, you generate a lot of Markdown. Reviewing it inside an editor gets noisy. Local Doc Renderer gives you a clean browser view — fully local, nothing to configure.
+      </p>
+      <div class="cta-row">
+        <a class="btn-primary" href="#download">Download</a>
+        <a class="btn-ghost" href="https://github.com/priyansh32/local-doc-renderer">Docs on GitHub</a>
+      </div>
+    </div>
+
+    <div class="code-block">
+      <div class="code-block-bar">
+        <span class="dot dot-r"></span>
+        <span class="dot dot-y"></span>
+        <span class="dot dot-g"></span>
+        <span class="code-block-label">agent output example</span>
+      </div>
+      <pre><span class="t-green"># Study Plan</span>
+
+<span class="t-muted">```mermaid</span>
+graph TD
+  Prompt --> Notes
+  Notes --> Diagram
+  Diagram --> Review
+<span class="t-muted">```</span></pre>
+    </div>
+  </div>
+
+  <section id="features" class="fade" style="animation-delay: 120ms;">
+    <span class="section-label">Features</span>
+    <h2 class="section-title">Everything you need, nothing you don't.</h2>
+    <p class="section-body">A lightweight reader for Markdown folders where diagrams, notes, and AI-generated docs can be reviewed quickly.</p>
+
+    <div class="features-grid">
+      <div class="feature">
+        <span class="feature-icon">01 — local-first</span>
+        <h3>Stays on disk</h3>
+        <p>Your docs never leave your machine. No cloud service, no account, no upload.</p>
+      </div>
+      <div class="feature">
+        <span class="feature-icon">02 — single binary</span>
+        <h3>No runtime setup</h3>
+        <p>Drop it in your folder and run. No database, no package manager, no heavy stack.</p>
+      </div>
+      <div class="feature">
+        <span class="feature-icon">03 — diagrams</span>
+        <h3>Mermaid support</h3>
+        <p>Fenced Mermaid blocks render in the docs view as part of normal Markdown reading.</p>
+      </div>
+      <div class="feature">
+        <span class="feature-icon">04 — search</span>
+        <h3>Quick across notes</h3>
+        <p>Title-prioritized search with snippets that take you directly to the right doc.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="workflow" class="fade" style="animation-delay: 120ms;">
+    <span class="section-label">Workflow</span>
+    <h2 class="section-title">Works with what you already do.</h2>
+    <p class="section-body">Keep your existing folders, prompts, and Markdown habits. This improves the reading layer without touching your writing flow.</p>
+
+    <div class="steps">
+      <div class="step">
+        <span class="step-num">01</span>
+        <div class="step-content">
+          <h3>Generate docs with your agent</h3>
+          <p>Ask your assistant to draft explainers, walkthroughs, and Mermaid diagrams as plain Markdown files.</p>
+        </div>
+      </div>
+      <div class="step">
+        <span class="step-num">02</span>
+        <div class="step-content">
+          <h3>Run in your docs root</h3>
+          <p>Launch Local Doc Renderer from the folder that already contains your notes and documentation.</p>
+        </div>
+      </div>
+      <div class="step">
+        <span class="step-num">03</span>
+        <div class="step-content">
+          <h3>Read and iterate faster</h3>
+          <p>Navigate, search, and review in browser — everything stays local and version-controlled.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="run-block" style="margin-top: 1.5rem;">
+      <span class="run-label">Drop the binary in your Markdown folder, then:</span>
+      <span class="run-cmd">./local-doc-renderer</span>
+    </div>
+  </section>
+
+  <section id="download" class="fade" style="animation-delay: 120ms;">
+    <span class="section-label">Download</span>
+    <h2 class="section-title">Pick your platform.</h2>
+    <p class="section-body">Releases load directly from GitHub. Select a version, then grab your binary.</p>
+
+    <div id="download-status" class="download-status">Loading releases…</div>
+
+    <div id="download-ui" style="display:none;">
+      <div class="version-row">
+        <select id="version-select"></select>
+        <a id="release-link" class="btn-ghost" target="_blank" rel="noopener noreferrer" href="#" style="font-size:0.82rem; padding: 0.5rem 0.75rem; display:inline-block;">Release notes</a>
+      </div>
+
+      <p id="version-meta" class="version-date"></p>
+
+      <div id="platform-grid" class="platform-grid"></div>
+
+      <div class="download-footer">
+        <a href="https://github.com/priyansh32/local-doc-renderer/releases">All releases</a>
+        <a id="source-tag-link" target="_blank" rel="noopener noreferrer" href="#">Source tag</a>
+      </div>
+
+      <details id="prov-wrap" style="display:none;">
+        <summary>Provenance files</summary>
+        <div id="prov-list" class="prov-list"></div>
+      </details>
+    </div>
+  </section>
+
+</div>
+
+<footer>
+  <div class="container footer-inner">
+    <p class="footer-brand">Local Doc Renderer — local-first docs as a single binary</p>
+    <div class="footer-links">
+      <a href="#features">Features</a>
+      <span class="footer-dot">•</span>
+      <a href="#workflow">Workflow</a>
+      <span class="footer-dot">•</span>
+      <a href="#download">Download</a>
+      <span class="footer-dot">•</span>
+      <a href="https://github.com/priyansh32/local-doc-renderer">GitHub</a>
+      <span class="footer-dot">•</span>
+      <span id="year"></span>
+    </div>
+  </div>
+</footer>
+
+<script>
+  const OWNER = "priyansh32";
+  const REPO = "local-doc-renderer";
+  const RELEASES_URL = `https://api.github.com/repos/${OWNER}/${REPO}/releases`;
+
+  const PLATFORMS = [
+    { key: "linux-amd64",   label: "Linux x64" },
+    { key: "linux-arm64",   label: "Linux ARM64" },
+    { key: "macos-amd64",   label: "macOS Intel" },
+    { key: "macos-arm64",   label: "macOS Apple Silicon" },
+    { key: "windows-amd64", label: "Windows x64" },
+    { key: "windows-arm64", label: "Windows ARM64" },
+  ];
+
+  let allReleases = [];
+
+  function bytesToHuman(b) {
+    if (!b) return "-";
+    const u = ["B","KB","MB","GB"], v = [b,b/1024,b/1048576,b/1073741824];
+    let i = 0;
+    while (i < 3 && v[i+1] >= 1) i++;
+    return `${v[i].toFixed(v[i]>=100?0:1)} ${u[i]}`;
+  }
+
+  function fmtDate(s) {
+    if (!s) return "";
+    return new Date(s).toLocaleDateString(undefined, { year:"numeric", month:"short", day:"2-digit" });
+  }
+
+  function detectPlatform() {
+    const ua = navigator.userAgent.toLowerCase();
+    const arm = ua.includes("arm64") || ua.includes("aarch64") ? "arm64" : "amd64";
+    if (ua.includes("mac os") || ua.includes("macintosh")) return `macos-${arm}`;
+    if (ua.includes("windows")) return `windows-${arm}`;
+    if (ua.includes("linux")) return `linux-${arm}`;
+    return "";
+  }
+
+  function parseAsset(asset) {
+    const prefix = "local-doc-renderer-";
+    if (!asset?.name?.startsWith(prefix)) return null;
+    const prov = asset.name.endsWith(".intoto.jsonl");
+    let suf = asset.name.slice(prefix.length);
+    if (prov) suf = suf.slice(0, -".intoto.jsonl".length);
+    if (suf.endsWith(".exe")) suf = suf.slice(0, -4);
+    const [os, arch] = suf.split("-");
+    const key = `${os === "darwin" ? "macos" : os}-${arch}`;
+    if (!PLATFORMS.some(p => p.key === key)) return null;
+    return { key, prov, name: asset.name, url: asset.browser_download_url, size: asset.size };
+  }
+
+  function mapAssets(assets) {
+    const bins = {}, provs = {};
+    for (const a of assets || []) {
+      const m = parseAsset(a);
+      if (!m) continue;
+      (m.prov ? provs : bins)[m.key] = m;
+    }
+    return { bins, provs };
+  }
+
+  async function fetchReleases() {
+    const releases = [];
+    for (let page = 1; page <= 10; page++) {
+      const r = await fetch(`${RELEASES_URL}?per_page=100&page=${page}`, { headers: { Accept: "application/vnd.github+json" } });
+      if (!r.ok) throw new Error(r.status);
+      const chunk = await r.json();
+      releases.push(...chunk);
+      if (chunk.length < 100) break;
+    }
+    return releases;
+  }
+
+  function renderRelease(release, latestTag, myPlatform) {
+    const tag = release.tag_name || "untagged";
+    document.getElementById("release-link").href = release.html_url;
+    document.getElementById("source-tag-link").href = `https://github.com/${OWNER}/${REPO}/tree/${encodeURIComponent(tag)}`;
+
+    const meta = document.getElementById("version-meta");
+    meta.textContent = `Published ${fmtDate(release.published_at || release.created_at)}`;
+
+    if (tag === latestTag && !release.draft && !release.prerelease) {
+      const b = document.createElement("span");
+      b.className = "badge badge-latest"; b.textContent = "Latest";
+      meta.appendChild(document.createTextNode(" ")); meta.appendChild(b);
+    }
+    if (release.prerelease) {
+      const b = document.createElement("span");
+      b.className = "badge badge-pre"; b.textContent = "Pre-release";
+      meta.appendChild(document.createTextNode(" ")); meta.appendChild(b);
+    }
+    if (release.draft) {
+      const b = document.createElement("span");
+      b.className = "badge badge-draft"; b.textContent = "Draft";
+      meta.appendChild(document.createTextNode(" ")); meta.appendChild(b);
+    }
+
+    const { bins, provs } = mapAssets(release.assets || []);
+    const grid = document.getElementById("platform-grid");
+    grid.innerHTML = "";
+
+    for (const plat of PLATFORMS) {
+      const asset = bins[plat.key];
+      const el = document.createElement(asset ? "a" : "div");
+      el.className = "asset-link" + (asset ? "" : " missing") + (asset && plat.key === myPlatform ? " recommended" : "");
+      if (asset) { el.href = asset.url; el.target = "_blank"; el.rel = "noopener noreferrer"; }
+
+      el.innerHTML = `<div class="asset-platform">${plat.label}</div>
+        <div class="asset-filename">${asset ? asset.name : "not available"}</div>
+        <div class="asset-size">${asset ? bytesToHuman(asset.size) : "—"}</div>`;
+      grid.appendChild(el);
+    }
+
+    const provEntries = PLATFORMS.map(p => ({ p, a: provs[p.key] })).filter(e => e.a);
+    const pw = document.getElementById("prov-wrap");
+    const pl = document.getElementById("prov-list");
+    if (provEntries.length) {
+      pw.style.display = "block"; pl.innerHTML = "";
+      for (const { p, a } of provEntries) {
+        const link = document.createElement("a");
+        link.href = a.url; link.target = "_blank"; link.rel = "noopener noreferrer";
+        link.textContent = `${p.label}: ${a.name}`;
+        pl.appendChild(link);
+      }
+    } else { pw.style.display = "none"; }
+  }
+
+  async function initDownload() {
+    const status = document.getElementById("download-status");
+    const ui = document.getElementById("download-ui");
+    const sel = document.getElementById("version-select");
+
+    try {
+      const releases = await fetchReleases();
+      if (!releases.length) { status.textContent = "No releases yet."; return; }
+      allReleases = releases;
+
+      const stable = releases.find(r => !r.draft && !r.prerelease);
+      const latestTag = stable?.tag_name || "";
+      const myPlatform = detectPlatform();
+
+      releases.forEach((r, i) => {
+        const o = document.createElement("option");
+        o.value = i;
+        const parts = [r.tag_name || "untagged"];
+        if (r.tag_name === latestTag && !r.draft && !r.prerelease) parts.push("latest");
+        if (r.prerelease) parts.push("pre");
+        if (r.draft) parts.push("draft");
+        o.textContent = parts.join(" · ");
+        sel.appendChild(o);
+      });
+
+      const init = stable ? releases.indexOf(stable) : 0;
+      sel.value = String(init >= 0 ? init : 0);
+      sel.addEventListener("change", () => {
+        const r = allReleases[Number(sel.value)];
+        if (r) renderRelease(r, latestTag, myPlatform);
+      });
+
+      status.style.display = "none";
+      ui.style.display = "block";
+      renderRelease(allReleases[Number(sel.value)], latestTag, myPlatform);
+    } catch {
+      status.innerHTML = `Couldn't load releases right now. <a href="https://github.com/${OWNER}/${REPO}/releases" style="color: var(--accent);">Open on GitHub →</a>`;
+    }
+  }
+
+  // Fade-in on scroll
+  const observer = new IntersectionObserver(entries => {
+    entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add("visible"); observer.unobserve(e.target); } });
+  }, { threshold: 0.12 });
+  document.querySelectorAll(".fade").forEach(el => observer.observe(el));
+
+  document.getElementById("year").textContent = new Date().getFullYear();
+  initDownload();
+</script>
+</body>
+</html>
