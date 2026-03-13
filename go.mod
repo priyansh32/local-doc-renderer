@@ -1,6 +1,6 @@
 module github.com/priyansh32/local-doc-renderer
 
-go 1.25.0
+go 1.25.8
 
 require github.com/yuin/goldmark v1.7.16
 
