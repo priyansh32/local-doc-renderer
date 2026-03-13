@@ -79,9 +79,11 @@ type PageData struct {
 }
 
 type SearchEntry struct {
-	Title   string
-	Path    string
-	Content string
+	Title        string
+	TitleLower   string
+	Path         string
+	Content      string
+	ContentLower string
 }
 
 type SearchResult struct {
@@ -598,10 +600,8 @@ func searchDocs(query string) []SearchResult {
 	matches := make([]searchMatch, 0, maxSearchResults)
 
 	for _, entry := range index {
-		titleLower := strings.ToLower(entry.Title)
-		contentLower := strings.ToLower(entry.Content)
-		titleMatch := strings.Contains(titleLower, q)
-		contentIdx := strings.Index(contentLower, q)
+		titleMatch := strings.Contains(entry.TitleLower, q)
+		contentIdx := strings.Index(entry.ContentLower, q)
 		if !titleMatch && contentIdx < 0 {
 			continue
 		}
@@ -610,7 +610,7 @@ func searchDocs(query string) []SearchResult {
 			result: SearchResult{
 				Title:   entry.Title,
 				Path:    entry.Path,
-				Snippet: getSnippet(entry.Content, q),
+				Snippet: getSnippet(entry.Content, entry.ContentLower, q),
 			},
 			titleMatch: titleMatch,
 		})
@@ -634,8 +634,8 @@ func searchDocs(query string) []SearchResult {
 	return results
 }
 
-func getSnippet(text, q string) string {
-	idx := strings.Index(strings.ToLower(text), q)
+func getSnippet(text, textLower, q string) string {
+	idx := strings.Index(textLower, q)
 	if idx < 0 {
 		return ""
 	}
@@ -773,15 +773,18 @@ func buildSearchIndex(baseDir, subDir string) []SearchEntry {
 		if e.IsDir() {
 			entries = append(entries, buildSearchIndex(baseDir, relPath)...)
 		} else if strings.HasSuffix(name, ".md") {
-			content, err := os.ReadFile(filepath.Join(baseDir, relPath))
+			contentBytes, err := os.ReadFile(filepath.Join(baseDir, relPath))
 			if err != nil {
 				continue
 			}
+			content := string(contentBytes)
 			title := strings.TrimSuffix(name, ".md")
 			entries = append(entries, SearchEntry{
-				Title:   title,
-				Path:    filepath.ToSlash(relPath),
-				Content: string(content),
+				Title:        title,
+				TitleLower:   strings.ToLower(title),
+				Path:         filepath.ToSlash(relPath),
+				Content:      content,
+				ContentLower: strings.ToLower(content),
 			})
 		}
 	}
