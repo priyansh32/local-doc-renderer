@@ -23,6 +23,14 @@ The renderer uses `goldmark` with these capabilities:
 - Auto heading IDs (`parser.WithAutoHeadingID`)
 - Syntax highlighting via `goldmark-highlighting` + Chroma
 - Monokai highlight style and generated CSS classes
+- Mermaid diagrams from fenced `mermaid` code blocks
+
+Example Mermaid block:
+
+```mermaid
+graph TD
+  A[Start] --> B[Finish]
+```
 
 ## How It Works
 
@@ -173,7 +181,7 @@ This endpoint sets:
 - `main.go`: server, Markdown rendering, templates, SPA script
 - `go.mod`, `go.sum`: module and dependencies
 - `README.md`: documentation
-- `sample.md`: sample content
+- `samples/`: sample docs (small examples, code block playground, and one larger walkthrough)
 
 ## Intended Use and Limitations
 

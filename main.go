@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -140,6 +141,9 @@ const (
 	serverMaxHeaderBytes = 1 << 20
 )
 
+//go:embed assets/mermaid.min.js
+var mermaidMinJS []byte
+
 var (
 	cache          searchCache
 	navCache       navTreeCache
@@ -207,6 +211,7 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
+	mux.HandleFunc("/assets/mermaid.min.js", mermaidAssetHandler)
 	mux.HandleFunc("/search", searchHandler)
 	mux.HandleFunc("/", handler)
 
@@ -358,6 +363,25 @@ func writePlainError(w http.ResponseWriter, status int, message string) {
 	w.WriteHeader(status)
 	if _, err := io.WriteString(w, message); err != nil {
 		log.Printf("Error writing response: %v", err)
+	}
+}
+
+func mermaidAssetHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", http.MethodGet+", "+http.MethodHead)
+		writePlainError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	if r.Method == http.MethodHead {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	if _, err := w.Write(mermaidMinJS); err != nil {
+		log.Printf("Error writing Mermaid asset response: %v", err)
 	}
 }
 
@@ -1096,6 +1120,26 @@ const layout = `<!DOCTYPE html>
       font-size: 13px;
     }
     #content pre code { background: none; padding: 0; font-size: inherit; border-radius: 0; }
+    #content .mermaid {
+      margin-bottom: 1.2em;
+      padding: 12px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: #fff;
+      overflow-x: auto;
+    }
+    #content .mermaid svg {
+      max-width: 100%;
+      height: auto;
+      display: block;
+      margin: 0 auto;
+    }
+    #content .mermaid[data-mermaid-error="true"] {
+      white-space: pre;
+      font-family: var(--mono);
+      font-size: 13px;
+      background: #fafbfc;
+    }
     #content code {
       font-family: var(--mono);
       font-size: 0.875em;
@@ -1171,13 +1215,15 @@ const layout = `<!DOCTYPE html>
     </div>
   </div>
 
-  <button id="sidebar-toggle" onclick="toggleSidebar()" title="Toggle sidebar">Menu</button>
+	<button id="sidebar-toggle" onclick="toggleSidebar()" title="Toggle sidebar">Menu</button>
 
+<script src="/assets/mermaid.min.js"></script>
 <script>
 // ── State ──────────────────────────────────────────────────────────────────
 const OPEN_DIRS_KEY = 'openDirs';
 let searchRequestCounter = 0;
 let currentActive = {{.Active | js}};
+let mermaidInitialized = false;
 
 function resolveInternalUrl(url) {
   const resolved = new URL(url, window.location.href);
@@ -1203,6 +1249,45 @@ function scrollToHash(hash, behavior = 'smooth') {
 
   target.scrollIntoView({ behavior, block: 'start' });
   return true;
+}
+
+function prepareMermaidBlocks(root) {
+  if (!root) return;
+
+  root.querySelectorAll('pre > code.language-mermaid').forEach(code => {
+    const pre = code.parentElement;
+    if (!pre || !pre.parentElement) return;
+
+    const container = document.createElement('div');
+    container.className = 'mermaid';
+    container.textContent = code.textContent || '';
+    pre.replaceWith(container);
+  });
+}
+
+async function renderMermaid(root = document) {
+  if (!window.mermaid || typeof window.mermaid.run !== 'function') return;
+
+  prepareMermaidBlocks(root);
+  const diagrams = root.querySelectorAll('.mermaid');
+  if (diagrams.length === 0) return;
+
+  if (!mermaidInitialized) {
+    window.mermaid.initialize({ startOnLoad: false, securityLevel: 'strict' });
+    mermaidInitialized = true;
+  }
+
+  for (const diagram of diagrams) {
+    if (diagram.dataset.mermaidRendered === 'true') continue;
+    try {
+      await window.mermaid.run({ nodes: [diagram] });
+      diagram.dataset.mermaidRendered = 'true';
+    } catch (err) {
+      diagram.dataset.mermaidRendered = 'true';
+      diagram.dataset.mermaidError = 'true';
+      console.error('Failed to render Mermaid diagram', err);
+    }
+  }
 }
 
 // ── Progress bar ───────────────────────────────────────────────────────────
@@ -1242,10 +1327,11 @@ async function navigate(url, pushState = true) {
     // Home special case
     const homeLink = document.querySelector('#nav-tree a[href="/"]');
     if (homeLink) homeLink.classList.toggle('active', currentActive === 'README.md');
-    expandActiveFolders();
+	    expandActiveFolders();
 
-    buildTOC();
-    if (!scrollToHash(hash, 'auto')) scrollToTop();
+	    await renderMermaid(document.getElementById('content'));
+	    buildTOC();
+	    if (!scrollToHash(hash, 'auto')) scrollToTop();
   } catch (e) {
     window.location.href = historyUrl;
   }
@@ -1471,6 +1557,7 @@ function toggleSidebar() {
 
 // ── Boot ───────────────────────────────────────────────────────────────────
 buildTOC();
+void renderMermaid(document.getElementById('content'));
 initSidebar();
 expandActiveFolders();
 if (window.location.hash) {
