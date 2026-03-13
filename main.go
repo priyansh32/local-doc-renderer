@@ -366,10 +366,20 @@ func writePlainError(w http.ResponseWriter, status int, message string) {
 	}
 }
 
+func requireMethods(w http.ResponseWriter, r *http.Request, methods ...string) bool {
+	for _, method := range methods {
+		if r.Method == method {
+			return true
+		}
+	}
+
+	w.Header().Set("Allow", strings.Join(methods, ", "))
+	writePlainError(w, http.StatusMethodNotAllowed, "Method not allowed")
+	return false
+}
+
 func mermaidAssetHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		w.Header().Set("Allow", http.MethodGet+", "+http.MethodHead)
-		writePlainError(w, http.StatusMethodNotAllowed, "Method not allowed")
+	if !requireMethods(w, r, http.MethodGet, http.MethodHead) {
 		return
 	}
 
@@ -683,9 +693,7 @@ func activePathFor(fullPath string) string {
 // ---------------------------------------------------------------------------
 
 func handler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		w.Header().Set("Allow", http.MethodGet+", "+http.MethodHead)
-		writePlainError(w, http.StatusMethodNotAllowed, "Method not allowed")
+	if !requireMethods(w, r, http.MethodGet, http.MethodHead) {
 		return
 	}
 
@@ -745,9 +753,7 @@ func handler(w http.ResponseWriter, r *http.Request) {
 // ---------------------------------------------------------------------------
 
 func searchHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		w.Header().Set("Allow", http.MethodGet)
-		writePlainError(w, http.StatusMethodNotAllowed, "Method not allowed")
+	if !requireMethods(w, r, http.MethodGet) {
 		return
 	}
 
