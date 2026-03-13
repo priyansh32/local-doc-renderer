@@ -17,12 +17,10 @@ Use these defaults unless the user says otherwise:
 
 - `fix`
   - implement the code change locally
-  - verify it
   - do not commit, push, open a PR, or merge unless explicitly requested
 
 - `ship`
   - implement the fix if needed
-  - verify it
   - commit the requested files only
   - push the branch
   - open or update the PR
@@ -48,51 +46,50 @@ Use these defaults unless the user says otherwise:
   - checking issue/PR state before acting
 - If the user says things like `open PR`, `update issue`, `post this`, `merge PR`, or `close issue`, use `gh` directly unless they explicitly ask for draft text only.
 - Before creating a new issue or PR, check existing GitHub state with `gh` to avoid duplicates when practical.
+- Do not work directly on `main` or `master` when implementing fixes unless the user explicitly says to.
+- Create a new branch for implementation work unless the user specifies otherwise.
 - Never commit unrequested files.
 - If the user names specific files to commit, commit only those files.
 - Leave unrelated local changes alone.
-- When creating a PR, keep the summary short and include the requested verification note if one was given.
+- Do not run destructive git commands such as `git reset --hard`, `git clean -fd`, or force push unless explicitly requested.
 - When updating issues or PRs, prefer practical root cause and fix plan over long writeups.
 
-## Verification Defaults
+## Decision Rules
 
-- If the user says `verified manually`, do not add or commit tests in that pass.
-- If the user says `add tests later`, leave test files uncommitted unless explicitly requested.
-- If verification is not specified:
-  - run the smallest useful local verification
-  - report what was verified and what was not
+If the user's request is ambiguous:
 
-## Preferred Request Format
+1. Prefer investigation before modification.
+2. Prefer local fixes before GitHub actions.
+3. Prefer small changes over large refactors.
+4. Ask for clarification if progress is impossible.
 
-For the fastest workflow, the user should ideally provide:
+## Diff Discipline
 
-1. Goal
-2. Constraints
-3. Git/GitHub actions
-4. Verification level
-5. Stop point
+When implementing fixes:
 
-Example:
+- keep changes minimal
+- avoid formatting-only edits
+- avoid refactors unless required for the fix
+- prefer surgical diffs
 
-```text
-Fix issue #1.
+## Request Style
 
-Constraints:
-- keep explanations short
-- no tests in this pass
-- commit only main.go
+The user does not need to follow a template.
 
-Git/GitHub:
-- update the issue
-- push the branch
-- open a PR with "verified manually"
-- do not merge yet
+- Expect normal human instructions, not structured task specs.
+- Infer the goal, constraints, Git/GitHub actions, and stop point from context when possible.
+- If the user leaves details out, make the smallest reasonable assumption and keep moving.
+- Ask for clarification only when progress would otherwise be risky or blocked.
 
-Verification:
-- manual verification only
+Structured requests are welcome, but they are optional.
 
-Stop after the PR is created.
-```
+## Verification
+
+If verification is not specified:
+
+- run the smallest useful local check (build, lint, or targeted test)
+- avoid long test suites unless needed to confirm the fix
+- report what was verified and what was not
 
 ## Useful Short Commands
 
@@ -108,4 +105,21 @@ These phrases should be interpreted narrowly:
 - `merge PR`
 - `keep GH text short`
 - `no tests in this pass`
-- `verified manually`
+
+## Autonomy Boundaries
+
+The agent may:
+
+- investigate code
+- implement local fixes
+- create branches
+- open or update PRs when requested
+
+The agent must NOT:
+
+- merge PRs
+- delete branches
+- modify repository settings
+- change CI configuration
+
+unless the user explicitly asks.
