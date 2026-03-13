@@ -37,10 +37,10 @@ graph TD
 1. The server starts on a requested port or an auto-selected free port.
 2. It serves:
    - `GET /` for the root document (`README.md`)
-   - `GET /search-index.json` for search metadata
+   - `GET /search?q=<query>` for search results
    - `GET /<path>` for Markdown content
 3. The frontend intercepts internal links and fetches partial JSON responses for SPA navigation.
-4. Search index data is loaded on-demand and cached server-side for 30 seconds.
+4. Search data is indexed and cached server-side for 30 seconds.
 
 ## URL and File Resolution Rules
 
@@ -156,24 +156,29 @@ On startup it prints:
 
 ## Search Endpoint
 
-`GET /search-index.json` returns an array of:
+`GET /search?q=<query>` returns an array of up to 12 results:
 
 - `title`: file name without `.md`
 - `path`: relative path from docs root
-- `content`: full raw markdown content
+- `snippet`: surrounding text excerpt for the matched query
 
 This endpoint sets:
 
 - `Content-Type: application/json`
-- `Cache-Control: no-cache`
+- `Cache-Control: no-store`
+
+Notes:
+
+- Empty/whitespace-only queries return an empty array.
+- Title matches are ranked above content-only matches.
 
 ## Architecture Summary
 
 - Backend: single `main.go` file with HTTP handlers, file walkers, and template rendering
 - Frontend: inline HTML/CSS/JS template served by Go `html/template`
-- Search: server-generated JSON index + client-side filtering
+- Search: server-side matching (`/search`) over a cached markdown index
 - State:
-  - Server cache for search index with RWMutex
+  - Server cache for search/nav data with RWMutex
   - Browser localStorage for open folder state
 
 ## Project Structure
