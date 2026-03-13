@@ -139,6 +139,16 @@ const (
 	serverIdleTimeout    = 60 * time.Second
 	serverHeaderTimeout  = 5 * time.Second
 	serverMaxHeaderBytes = 1 << 20
+	contentSecurityPolicy = "default-src 'self'; " +
+		"script-src 'self' 'unsafe-inline'; " +
+		"style-src 'self' 'unsafe-inline'; " +
+		"img-src 'self' data: https: http:; " +
+		"font-src 'self' data:; " +
+		"connect-src 'self'; " +
+		"object-src 'none'; " +
+		"base-uri 'self'; " +
+		"form-action 'self'; " +
+		"frame-ancestors 'none'"
 )
 
 //go:embed assets/mermaid.min.js
@@ -344,6 +354,8 @@ func initTemplate() error {
 
 func withSecurityGuards(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		setSecurityHeaders(w)
+
 		if r.Body != nil {
 			r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 		}
@@ -356,6 +368,14 @@ func withSecurityGuards(next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+func setSecurityHeaders(w http.ResponseWriter) {
+	w.Header().Set("Content-Security-Policy", contentSecurityPolicy)
+	w.Header().Set("Cross-Origin-Resource-Policy", "same-origin")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("X-Frame-Options", "DENY")
 }
 
 func writePlainError(w http.ResponseWriter, status int, message string) {
