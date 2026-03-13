@@ -1506,6 +1506,32 @@ function updateFocus(items) {
   items[focusedIdx]?.scrollIntoView({ block: 'nearest' });
 }
 
+function sanitizeSearchPath(pathValue) {
+  const raw = String(pathValue || '');
+  const trimmed = raw.replace(/^\/+/, '');
+  return trimmed.split('/').map(segment => encodeURIComponent(segment)).join('/');
+}
+
+function createSearchResultElement(entry) {
+  const item = document.createElement('a');
+  item.href = '/' + sanitizeSearchPath(entry.path);
+  item.setAttribute('data-spa', '');
+
+  const title = document.createElement('div');
+  title.className = 'res-title';
+  title.textContent = entry.title || '';
+  item.appendChild(title);
+
+  if (entry.snippet) {
+    const snippet = document.createElement('div');
+    snippet.className = 'res-snippet';
+    snippet.textContent = entry.snippet;
+    item.appendChild(snippet);
+  }
+
+  return item;
+}
+
 async function doSearch() {
   const q = searchInput.value.trim();
   if (!q) { searchResults.style.display = 'none'; return; }
@@ -1524,12 +1550,12 @@ async function doSearch() {
       return;
     }
 
-    searchResults.innerHTML = results.map(entry => {
-      return '<a href="/' + entry.path + '" data-spa>' +
-        '<div class="res-title">' + escHtml(entry.title || '') + '</div>' +
-        (entry.snippet ? '<div class="res-snippet">' + escHtml(entry.snippet) + '</div>' : '') +
-        '</a>';
-    }).join('');
+    searchResults.innerHTML = '';
+    const fragment = document.createDocumentFragment();
+    results.forEach(entry => {
+      fragment.appendChild(createSearchResultElement(entry));
+    });
+    searchResults.appendChild(fragment);
 
     searchResults.style.display = 'block';
     focusedIdx = -1;
@@ -1538,10 +1564,6 @@ async function doSearch() {
       searchResults.style.display = 'none';
     }
   }
-}
-
-function escHtml(s) {
-  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
 document.addEventListener('click', e => {
