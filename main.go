@@ -683,6 +683,12 @@ func activePathFor(fullPath string) string {
 // ---------------------------------------------------------------------------
 
 func handler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", http.MethodGet+", "+http.MethodHead)
+		writePlainError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+
 	fullPath, err := resolveRequestedFile(r.URL.Path)
 	if err != nil {
 		if errors.Is(err, errOutsideRoot) || errors.Is(err, os.ErrNotExist) {
