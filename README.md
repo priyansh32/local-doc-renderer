@@ -4,6 +4,13 @@ Local Doc Renderer is a single-binary Go application that turns a folder of Mark
 
 It is designed for local documentation workflows: notes, knowledge bases, project docs, and internal guides that live on disk.
 
+## Project Description
+
+Local Doc Renderer is a **local-first, single-binary** docs server for Markdown folders.
+
+- **Local-first:** your docs stay on your machine and run directly from disk.
+- **Single-binary:** no external runtime, no database, no setup-heavy stack.
+
 ## What This Project Does
 
 - Serves Markdown files from a directory over HTTP.

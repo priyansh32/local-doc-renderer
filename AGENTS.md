@@ -153,6 +153,8 @@ Use these defaults unless the user says otherwise:
   - creating, viewing, updating, and merging PRs
   - checking issue/PR state before acting
 - If the user says things like `open PR`, `update issue`, `post this`, `merge PR`, or `close issue`, use `gh` directly unless they explicitly ask for draft text only.
+- After creating a PR, post a PR comment with exactly `/gemini review` to trigger Gemini review unless the user explicitly says not to.
+- When Gemini (or another bot reviewer) leaves PR feedback, review all open PR threads for actionable suggestions. Apply only changes that are correct and in scope. If code changes are pushed in response, post a PR comment with exactly `/gemini review`.
 - Before creating a new issue or PR, check existing GitHub state with `gh` to avoid duplicates when practical.
 - Do not work directly on `main` or `master` when implementing fixes unless the user explicitly says to.
 - Create a new branch for implementation work unless the user specifies otherwise.
