@@ -1179,6 +1179,32 @@ const OPEN_DIRS_KEY = 'openDirs';
 let searchRequestCounter = 0;
 let currentActive = {{.Active | js}};
 
+function resolveInternalUrl(url) {
+  const resolved = new URL(url, window.location.href);
+  return {
+    fetchUrl: resolved.pathname + resolved.search,
+    historyUrl: resolved.pathname + resolved.search + resolved.hash,
+    hash: resolved.hash,
+  };
+}
+
+function scrollToHash(hash, behavior = 'smooth') {
+  if (!hash) return false;
+
+  let targetId = hash.replace(/^#/, '');
+  if (!targetId) return false;
+
+  try {
+    targetId = decodeURIComponent(targetId);
+  } catch (_) {}
+
+  const target = document.getElementById(targetId);
+  if (!target) return false;
+
+  target.scrollIntoView({ behavior, block: 'start' });
+  return true;
+}
+
 // ── Progress bar ───────────────────────────────────────────────────────────
 const progress = document.getElementById('progress');
 function showProgress() {
@@ -1192,8 +1218,7 @@ function doneProgress() {
 
 // ── SPA Navigation ─────────────────────────────────────────────────────────
 async function navigate(url, pushState = true) {
-  // Normalise: strip .md extension for display, keep as-is for fetch
-  const fetchUrl = url.startsWith('/') ? url : '/' + url;
+  const { fetchUrl, historyUrl, hash } = resolveInternalUrl(url);
 
   showProgress();
   try {
@@ -1207,7 +1232,7 @@ async function navigate(url, pushState = true) {
     document.title = data.title;
     currentActive = data.active;
 
-    if (pushState) history.pushState({ url: fetchUrl }, data.title, fetchUrl);
+    if (pushState) history.pushState({ url: historyUrl }, data.title, historyUrl);
 
     // Update active link in nav
     document.querySelectorAll('#nav-tree a[data-spa]').forEach(a => {
@@ -1220,9 +1245,9 @@ async function navigate(url, pushState = true) {
     expandActiveFolders();
 
     buildTOC();
-    scrollToTop();
+    if (!scrollToHash(hash, 'auto')) scrollToTop();
   } catch (e) {
-    window.location.href = fetchUrl;
+    window.location.href = historyUrl;
   }
   doneProgress();
 }
@@ -1237,8 +1262,16 @@ document.addEventListener('click', e => {
   if (!link) return;
   const href = link.getAttribute('href');
   if (!href) return;
-  // Skip: external, hash-only, mailto, data attrs
-  if (href.startsWith('http') || href.startsWith('//') || href.startsWith('#') || href.startsWith('mailto:') || href.startsWith('data:')) return;
+  // Skip: external, mailto, data attrs
+  if (href.startsWith('http') || href.startsWith('//') || href.startsWith('mailto:') || href.startsWith('data:')) return;
+  if (href.startsWith('#')) {
+    e.preventDefault();
+    if (scrollToHash(href)) {
+      const nextUrl = window.location.pathname + window.location.search + href;
+      history.pushState({ url: nextUrl }, document.title, nextUrl);
+    }
+    return;
+  }
   // Skip non-doc links
   if (link.target === '_blank') return;
   e.preventDefault();
@@ -1246,7 +1279,13 @@ document.addEventListener('click', e => {
 });
 
 window.addEventListener('popstate', e => {
-  const url = (e.state && e.state.url) || window.location.pathname;
+  const url = (e.state && e.state.url) || (window.location.pathname + window.location.search + window.location.hash);
+  const { fetchUrl, hash } = resolveInternalUrl(url);
+  const currentUrl = window.location.pathname + window.location.search;
+  if (fetchUrl === currentUrl) {
+    if (!scrollToHash(hash, 'auto')) scrollToTop();
+    return;
+  }
   navigate(url, false);
 });
 
@@ -1272,7 +1311,10 @@ function buildTOC() {
     a.textContent = h.textContent;
     a.addEventListener('click', ev => {
       ev.preventDefault();
-      h.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      if (scrollToHash(a.getAttribute('href'))) {
+        const nextUrl = window.location.pathname + window.location.search + a.getAttribute('href');
+        history.pushState({ url: nextUrl }, document.title, nextUrl);
+      }
     });
     li.appendChild(a);
     list.appendChild(li);
@@ -1431,9 +1473,13 @@ function toggleSidebar() {
 buildTOC();
 initSidebar();
 expandActiveFolders();
+if (window.location.hash) {
+  scrollToHash(window.location.hash, 'auto');
+}
 
 // Push initial state so popstate works
-history.replaceState({ url: window.location.pathname }, document.title, window.location.pathname);
+const initialUrl = window.location.pathname + window.location.search + window.location.hash;
+history.replaceState({ url: initialUrl }, document.title, initialUrl);
 </script>
 </body>
 </html>
