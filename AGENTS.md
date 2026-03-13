@@ -96,8 +96,8 @@ Unless the user specifies otherwise:
 ## GitHub Auth
 
 - For this repo, do not run `gh auth login` against the user's global GitHub CLI config.
-- When Codex needs GitHub access, use `.\scripts\codex-gh.ps1 ...` instead of raw `gh`.
-- That wrapper reads `ARTHUR_TOKEN` from `.env`, applies it only to that one `gh` process, and verifies the authenticated user is `realArthurMorgan`.
+- When Codex needs GitHub access, use `./scripts/codex-gh.sh ...` on Linux/macOS or `.\scripts\codex-gh.ps1 ...` on PowerShell instead of raw `gh`.
+- The wrapper reads `ARTHUR_TOKEN` from `.env`, applies it only to that one `gh` process, and verifies the authenticated user is `realArthurMorgan`.
 - If the resolved GitHub user is not `realArthurMorgan`, stop and fix auth before doing any GitHub action.
 
 ---
