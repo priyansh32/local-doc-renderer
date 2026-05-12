@@ -1170,24 +1170,93 @@ const layout = `<!DOCTYPE html>
     }
     #content pre code { background: none; padding: 0; font-size: inherit; border-radius: 0; }
     #content .mermaid {
+      position: relative;
       margin-bottom: 1.2em;
       padding: 12px;
       border: 1px solid var(--border);
       border-radius: var(--radius);
       background: #fff;
-      overflow-x: auto;
+      overflow: hidden;
     }
     #content .mermaid svg {
       max-width: 100%;
       height: auto;
       display: block;
       margin: 0 auto;
+      transform-origin: 0 0;
+      will-change: transform;
     }
+    #content .mermaid.mermaid-zoomable {
+      cursor: grab;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    #content .mermaid.mermaid-zoomable.dragging { cursor: grabbing; }
     #content .mermaid[data-mermaid-error="true"] {
       white-space: pre;
       font-family: var(--mono);
       font-size: 13px;
       background: #fafbfc;
+      cursor: auto;
+    }
+    .mermaid-toolbar {
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      display: flex;
+      gap: 2px;
+      background: rgba(255,255,255,.94);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 2px;
+      box-shadow: 0 1px 4px rgba(0,0,0,.06);
+      opacity: 0;
+      transition: opacity 0.15s ease;
+      z-index: 5;
+    }
+    #content .mermaid:hover .mermaid-toolbar,
+    #content .mermaid:focus-within .mermaid-toolbar { opacity: 1; }
+    #content .mermaid:fullscreen .mermaid-toolbar { opacity: 1; }
+    .mermaid-toolbar button {
+      background: transparent;
+      border: none;
+      width: 28px;
+      height: 28px;
+      cursor: pointer;
+      border-radius: 4px;
+      font-size: 15px;
+      line-height: 1;
+      color: var(--text);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+    }
+    .mermaid-toolbar button:hover { background: var(--accent-bg); color: var(--accent); }
+    .mermaid-toolbar .mermaid-zoom-level {
+      font-size: 11px;
+      color: var(--muted);
+      align-self: center;
+      padding: 0 4px;
+      min-width: 36px;
+      text-align: center;
+      font-variant-numeric: tabular-nums;
+    }
+    #content .mermaid:fullscreen {
+      width: 100vw;
+      height: 100vh;
+      max-width: none;
+      padding: 0;
+      border: none;
+      border-radius: 0;
+      background: #fff;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    #content .mermaid:fullscreen svg {
+      max-width: none;
+      max-height: none;
     }
     #content code {
       font-family: var(--mono);
@@ -1331,12 +1400,150 @@ async function renderMermaid(root = document) {
     try {
       await window.mermaid.run({ nodes: [diagram] });
       diagram.dataset.mermaidRendered = 'true';
+      enableMermaidZoom(diagram);
     } catch (err) {
       diagram.dataset.mermaidRendered = 'true';
       diagram.dataset.mermaidError = 'true';
       console.error('Failed to render Mermaid diagram', err);
     }
   }
+}
+
+// ── Mermaid zoom / pan / fullscreen ────────────────────────────────────────
+function enableMermaidZoom(container) {
+  if (!container || container.dataset.zoomEnabled === 'true') return;
+  const svg = container.querySelector('svg');
+  if (!svg) return;
+  container.dataset.zoomEnabled = 'true';
+  container.classList.add('mermaid-zoomable');
+  container.tabIndex = 0;
+
+  const MIN_SCALE = 0.2;
+  const MAX_SCALE = 12;
+  const ZOOM_STEP = 1.25;
+  let scale = 1, tx = 0, ty = 0;
+
+  const toolbar = document.createElement('div');
+  toolbar.className = 'mermaid-toolbar';
+  toolbar.innerHTML =
+    '<button type="button" data-act="zoom-out" title="Zoom out" aria-label="Zoom out">−</button>' +
+    '<span class="mermaid-zoom-level" data-role="level">100%</span>' +
+    '<button type="button" data-act="zoom-in" title="Zoom in" aria-label="Zoom in">+</button>' +
+    '<button type="button" data-act="reset" title="Reset view" aria-label="Reset view">⟲</button>' +
+    '<button type="button" data-act="fullscreen" title="Fullscreen (F)" aria-label="Fullscreen">⛶</button>';
+  container.insertBefore(toolbar, container.firstChild);
+  const levelEl = toolbar.querySelector('[data-role="level"]');
+  const fsBtn = toolbar.querySelector('[data-act="fullscreen"]');
+
+  function apply() {
+    svg.style.transform = 'translate(' + tx + 'px, ' + ty + 'px) scale(' + scale + ')';
+    if (levelEl) levelEl.textContent = Math.round(scale * 100) + '%';
+  }
+
+  function reset() { scale = 1; tx = 0; ty = 0; apply(); }
+
+  function zoomBy(factor, cx, cy) {
+    const rect = container.getBoundingClientRect();
+    if (cx === undefined) cx = rect.width / 2;
+    if (cy === undefined) cy = rect.height / 2;
+    const next = Math.max(MIN_SCALE, Math.min(MAX_SCALE, scale * factor));
+    if (next === scale) return;
+    const k = next / scale;
+    tx = cx - k * (cx - tx);
+    ty = cy - k * (cy - ty);
+    scale = next;
+    apply();
+  }
+
+  function toggleFullscreen() {
+    if (document.fullscreenElement === container) {
+      document.exitFullscreen && document.exitFullscreen();
+    } else if (container.requestFullscreen) {
+      container.requestFullscreen().catch(() => {});
+    }
+  }
+
+  toolbar.addEventListener('pointerdown', e => e.stopPropagation());
+  toolbar.addEventListener('dblclick', e => e.stopPropagation());
+  toolbar.addEventListener('wheel', e => e.stopPropagation(), { passive: true });
+  toolbar.addEventListener('click', e => {
+    const btn = e.target.closest('button');
+    if (!btn) return;
+    e.stopPropagation();
+    const act = btn.dataset.act;
+    if (act === 'zoom-in') zoomBy(ZOOM_STEP);
+    else if (act === 'zoom-out') zoomBy(1 / ZOOM_STEP);
+    else if (act === 'reset') reset();
+    else if (act === 'fullscreen') toggleFullscreen();
+  });
+
+  container.addEventListener('wheel', e => {
+    if (!e.ctrlKey && !e.metaKey) return;
+    e.preventDefault();
+    const rect = container.getBoundingClientRect();
+    const cx = e.clientX - rect.left;
+    const cy = e.clientY - rect.top;
+    const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
+    zoomBy(factor, cx, cy);
+  }, { passive: false });
+
+  let dragging = false, lastX = 0, lastY = 0, activePointer = null;
+  container.addEventListener('pointerdown', e => {
+    if (e.button !== 0) return;
+    if (e.target.closest('.mermaid-toolbar')) return;
+    dragging = true;
+    activePointer = e.pointerId;
+    lastX = e.clientX;
+    lastY = e.clientY;
+    container.classList.add('dragging');
+    try { container.setPointerCapture(e.pointerId); } catch (_) {}
+  });
+  container.addEventListener('pointermove', e => {
+    if (!dragging || e.pointerId !== activePointer) return;
+    tx += e.clientX - lastX;
+    ty += e.clientY - lastY;
+    lastX = e.clientX;
+    lastY = e.clientY;
+    apply();
+  });
+  function endDrag(e) {
+    if (!dragging || e.pointerId !== activePointer) return;
+    dragging = false;
+    activePointer = null;
+    container.classList.remove('dragging');
+    try { container.releasePointerCapture(e.pointerId); } catch (_) {}
+  }
+  container.addEventListener('pointerup', endDrag);
+  container.addEventListener('pointercancel', endDrag);
+  container.addEventListener('lostpointercapture', endDrag);
+
+  container.addEventListener('dblclick', e => {
+    if (e.target.closest('.mermaid-toolbar')) return;
+    e.preventDefault();
+    const rect = container.getBoundingClientRect();
+    const cx = e.clientX - rect.left;
+    const cy = e.clientY - rect.top;
+    zoomBy(e.shiftKey ? 1 / ZOOM_STEP : ZOOM_STEP, cx, cy);
+  });
+
+  container.addEventListener('keydown', e => {
+    if (e.target.closest('.mermaid-toolbar')) return;
+    if (e.key === '+' || e.key === '=') { zoomBy(ZOOM_STEP); e.preventDefault(); }
+    else if (e.key === '-' || e.key === '_') { zoomBy(1 / ZOOM_STEP); e.preventDefault(); }
+    else if (e.key === '0') { reset(); e.preventDefault(); }
+    else if (e.key === 'f' || e.key === 'F') { toggleFullscreen(); e.preventDefault(); }
+  });
+
+  container.addEventListener('fullscreenchange', () => {
+    if (document.fullscreenElement === container) {
+      reset();
+      if (fsBtn) fsBtn.textContent = '⤫';
+    } else if (fsBtn) {
+      fsBtn.textContent = '⛶';
+    }
+  });
+
+  apply();
 }
 
 // ── Progress bar ───────────────────────────────────────────────────────────
