@@ -1183,8 +1183,6 @@ const layout = `<!DOCTYPE html>
       height: auto;
       display: block;
       margin: 0 auto;
-      transform-origin: 0 0;
-      will-change: transform;
     }
     #content .mermaid.mermaid-zoomable {
       cursor: grab;
@@ -1255,6 +1253,8 @@ const layout = `<!DOCTYPE html>
       justify-content: center;
     }
     #content .mermaid:fullscreen svg {
+      width: 100vw;
+      height: 100vh;
       max-width: none;
       max-height: none;
     }
@@ -1410,6 +1410,8 @@ async function renderMermaid(root = document) {
 }
 
 // ── Mermaid zoom / pan / fullscreen ────────────────────────────────────────
+// Zoom is applied by mutating the SVG viewBox so the browser re-rasterizes
+// vector content at every zoom level — no CSS transform scaling, no blur.
 function enableMermaidZoom(container) {
   if (!container || container.dataset.zoomEnabled === 'true') return;
   const svg = container.querySelector('svg');
@@ -1419,9 +1421,36 @@ function enableMermaidZoom(container) {
   container.tabIndex = 0;
 
   const MIN_SCALE = 0.2;
-  const MAX_SCALE = 12;
+  const MAX_SCALE = 20;
   const ZOOM_STEP = 1.25;
-  let scale = 1, tx = 0, ty = 0;
+
+  // Original viewBox (fallback to getBBox if mermaid omitted one).
+  let vb0;
+  const vbAttr = svg.getAttribute('viewBox');
+  if (vbAttr) {
+    const p = vbAttr.split(/[\s,]+/).map(Number);
+    if (p.length === 4 && p.every(n => Number.isFinite(n))) {
+      vb0 = { x: p[0], y: p[1], w: p[2], h: p[3] };
+    }
+  }
+  if (!vb0) {
+    try {
+      const b = svg.getBBox();
+      vb0 = { x: b.x, y: b.y, w: b.width || 100, h: b.height || 100 };
+    } catch (_) {
+      vb0 = { x: 0, y: 0, w: 100, h: 100 };
+    }
+  }
+  if (!svg.getAttribute('preserveAspectRatio')) {
+    svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+  }
+  // Mermaid often sets style="max-width: NNNpx" which caps the natural size.
+  // Drop that cap so fullscreen can expand the SVG to the viewport.
+  svg.style.maxWidth = '';
+
+  let scale = 1;
+  let vbX = vb0.x;
+  let vbY = vb0.y;
 
   const toolbar = document.createElement('div');
   toolbar.className = 'mermaid-toolbar';
@@ -1435,23 +1464,45 @@ function enableMermaidZoom(container) {
   const levelEl = toolbar.querySelector('[data-role="level"]');
   const fsBtn = toolbar.querySelector('[data-act="fullscreen"]');
 
+  function vbW() { return vb0.w / scale; }
+  function vbH() { return vb0.h / scale; }
+
   function apply() {
-    svg.style.transform = 'translate(' + tx + 'px, ' + ty + 'px) scale(' + scale + ')';
+    svg.setAttribute('viewBox', vbX + ' ' + vbY + ' ' + vbW() + ' ' + vbH());
     if (levelEl) levelEl.textContent = Math.round(scale * 100) + '%';
   }
 
-  function reset() { scale = 1; tx = 0; ty = 0; apply(); }
+  function reset() {
+    scale = 1;
+    vbX = vb0.x;
+    vbY = vb0.y;
+    apply();
+  }
 
-  function zoomBy(factor, cx, cy) {
-    const rect = container.getBoundingClientRect();
-    if (cx === undefined) cx = rect.width / 2;
-    if (cy === undefined) cy = rect.height / 2;
+  function zoomBy(factor, screenX, screenY) {
+    const r = svg.getBoundingClientRect();
+    if (r.width === 0 || r.height === 0) return;
+    const cx = screenX !== undefined ? screenX : r.width / 2;
+    const cy = screenY !== undefined ? screenY : r.height / 2;
     const next = Math.max(MIN_SCALE, Math.min(MAX_SCALE, scale * factor));
     if (next === scale) return;
-    const k = next / scale;
-    tx = cx - k * (cx - tx);
-    ty = cy - k * (cy - ty);
+    const fx = cx / r.width;
+    const fy = cy / r.height;
+    // Point in viewBox coords currently under the cursor.
+    const px = vbX + fx * vbW();
+    const py = vbY + fy * vbH();
     scale = next;
+    // Re-anchor so the same point stays under the cursor.
+    vbX = px - fx * vbW();
+    vbY = py - fy * vbH();
+    apply();
+  }
+
+  function panByScreen(dx, dy) {
+    const r = svg.getBoundingClientRect();
+    if (r.width === 0 || r.height === 0) return;
+    vbX -= dx * (vbW() / r.width);
+    vbY -= dy * (vbH() / r.height);
     apply();
   }
 
@@ -1480,9 +1531,9 @@ function enableMermaidZoom(container) {
   container.addEventListener('wheel', e => {
     if (!e.ctrlKey && !e.metaKey) return;
     e.preventDefault();
-    const rect = container.getBoundingClientRect();
-    const cx = e.clientX - rect.left;
-    const cy = e.clientY - rect.top;
+    const r = svg.getBoundingClientRect();
+    const cx = e.clientX - r.left;
+    const cy = e.clientY - r.top;
     const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
     zoomBy(factor, cx, cy);
   }, { passive: false });
@@ -1500,11 +1551,9 @@ function enableMermaidZoom(container) {
   });
   container.addEventListener('pointermove', e => {
     if (!dragging || e.pointerId !== activePointer) return;
-    tx += e.clientX - lastX;
-    ty += e.clientY - lastY;
+    panByScreen(e.clientX - lastX, e.clientY - lastY);
     lastX = e.clientX;
     lastY = e.clientY;
-    apply();
   });
   function endDrag(e) {
     if (!dragging || e.pointerId !== activePointer) return;
@@ -1520,9 +1569,9 @@ function enableMermaidZoom(container) {
   container.addEventListener('dblclick', e => {
     if (e.target.closest('.mermaid-toolbar')) return;
     e.preventDefault();
-    const rect = container.getBoundingClientRect();
-    const cx = e.clientX - rect.left;
-    const cy = e.clientY - rect.top;
+    const r = svg.getBoundingClientRect();
+    const cx = e.clientX - r.left;
+    const cy = e.clientY - r.top;
     zoomBy(e.shiftKey ? 1 / ZOOM_STEP : ZOOM_STEP, cx, cy);
   });
 
